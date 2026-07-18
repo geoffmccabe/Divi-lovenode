@@ -26,11 +26,17 @@
 //! let _ = search_window(&tip, &coin, 1_700_003_600, 1_700_003_660);
 //! ```
 
+pub mod block;
 pub mod kernel;
+pub mod serialize;
+pub mod tx;
 pub mod u256;
 
 pub use kernel::{
     check_win, coin_age_weight, search_window, stake_hash, target_hit, NetworkTip, StakeCandidate,
     COIN, MAX_COIN_AGE_WEIGHT,
 };
+pub use block::{merkle_root, BlockHeader};
+pub use serialize::{display_hex, dsha256, from_hex, hash_from_display_hex, to_hex};
+pub use tx::{OutPoint, Transaction, TxIn, TxOut};
 pub use u256::U256;

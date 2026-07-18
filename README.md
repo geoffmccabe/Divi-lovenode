@@ -6,9 +6,10 @@ LoveNode lets someone whose only computer is a phone stake their DIVI overnight,
 rewards, and help secure the Divi network — without the 6+ GB chain and without the phone
 doing any heavy work.
 
-> **Status: proven against a live node.** The win-check is verified byte-identical to
-> Divi's C++ implementation, and the relay reads a real staking tip end-to-end. The phone
-> client is still a scaffold.
+> **Status: consensus layer proven against real chain data.** The win-check is
+> byte-identical to Divi's C++ implementation; block headers, merkle roots and
+> transactions all reproduce real blocks exactly. What remains before a full
+> end-to-end stake is on-device signing (secp256k1) and the relay transport.
 
 ---
 
@@ -67,7 +68,8 @@ build if anyone ever adds a signable-digest field. Full rules in [docs/SECURITY.
 ## Layout
 
 ```
-crates/lovenode-core     the win-check. No I/O, no keys, no chain. Consensus-critical.
+crates/lovenode-core     win-check + block/transaction serialization. No I/O, no
+                         keys, no chain. Consensus-critical.
 crates/lovenode-rewards  NFD (Divi NFT) award hooks — pluggable policy + sink.
 crates/lovenode-relay    node adapter, per-block search engine, phone protocol.
 app/                     phone client (Tauri 2 mobile) — scaffold.
@@ -112,6 +114,24 @@ stake modifier : 556175766445949947
 bits           : 0x207fffff
 >>> relay can see the staking tip; search is ready.
 ```
+
+## What is proven, and how
+
+Every consensus-critical piece is checked against something external, not against
+my own reading of the source:
+
+| Piece | Proven by |
+|---|---|
+| Stake win-check | byte-identical to a C++ oracle compiled against Divi's own libraries |
+| Block header + hash | reproduces a real block hash (v4, 112-byte header) |
+| Merkle root | reproduces a real block's merkle root |
+| Transaction serialization | re-emits a real transaction's raw bytes exactly |
+| Stake modifier | read live from a patched node (`getstakinginfo`) |
+
+Two traps worth knowing, both caught this way: Divi v4 headers are **112 bytes**
+(an accumulator checkpoint follows the nonce — hashing the usual 80 gives a wrong
+hash every time), and the correct stake modifier is **not** `tip->nStakeModifier`
+but the most recent block that actually generated one.
 
 ## Platform reality
 
