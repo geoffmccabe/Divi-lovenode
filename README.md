@@ -6,9 +6,9 @@ LoveNode lets someone whose only computer is a phone stake their DIVI overnight,
 rewards, and help secure the Divi network — without the 6+ GB chain and without the phone
 doing any heavy work.
 
-> **Status: foundation built and tested; not yet running against a live chain.**
-> The consensus math, the award hooks, and the relay engine are implemented and covered by
-> tests. The phone app is a scaffold. One small node-side RPC is still required (§ Blockers).
+> **Status: proven against a live node.** The win-check is verified byte-identical to
+> Divi's C++ implementation, and the relay reads a real staking tip end-to-end. The phone
+> client is still a scaffold.
 
 ---
 
@@ -94,18 +94,24 @@ The hooks are built and tested; the game details are deliberately left open:
 Nothing here mints anything or knows the NFD on-chain format — that stays with the Divi
 Collectibles workstream, so the card game can change completely without touching staking.
 
-## Blockers
+## Node requirement (built)
 
-**The node needs one small read-only RPC.** The stake modifier lives in
-`CBlockIndex::nStakeModifier` and is not exposed by any existing RPC (verified against the
-source). The relay needs:
+The stake modifier is not exposed by any RPC in stock `divid`, so a small **read-only**
+`getstakinginfo` was added to the node (`rpcblockchain.cpp`, modernize branch). It changes no
+validation rule and needs no fork.
+
+It deliberately does **not** return `tip->nStakeModifier`: it mirrors the node's own hardened
+modifier path, walking back to the most recent block that actually generated one. Live proof —
+the tip was height 729 while the correct modifier came from 727, so the naive version would
+have been silently wrong.
 
 ```
-getstakinginfo -> { height, tip_hash, stake_modifier, bits, tip_time }
+$ lovenode-relay check
+height         : 729
+stake modifier : 556175766445949947
+bits           : 0x207fffff
+>>> relay can see the staking tip; search is ready.
 ```
-
-This changes no validation rule and needs no fork — it only surfaces a value the node already
-computes. Until it lands, `lovenode-relay check` will tell you exactly that.
 
 ## Platform reality
 

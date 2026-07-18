@@ -3,18 +3,20 @@
 //! ## ⚠ Node prerequisite
 //!
 //! The stake modifier lives in `CBlockIndex::nStakeModifier` (see
-//! `divi/src/chain.h`) and is **not exposed by any existing RPC** — verified
-//! against the Divi source. The relay therefore needs one small, **read-only**
-//! RPC added to `divid`:
+//! `divi/src/chain.h`) and is **not exposed by any RPC in stock divid**. A small
+//! **read-only** RPC has been added to the Divi node for this purpose
+//! (`getstakinginfo`, in `rpcblockchain.cpp` on the modernize branch):
 //!
 //! ```text
 //! getstakinginfo -> { height, tip_hash, stake_modifier, bits, tip_time }
 //! ```
 //!
-//! This changes no validation rule and requires no fork — it only surfaces a
-//! value the node already computes and stores. Until it exists, [`staking_tip`]
-//! will return an error explaining exactly what is missing, and the relay can
-//! still be exercised with an injected tip (see `engine::Engine::search_with`).
+//! It changes no validation rule and requires no fork — it only surfaces values
+//! the node already computes. Crucially it does NOT return `tip->nStakeModifier`
+//! directly: it mirrors `PoSStakeModifierService`'s hardened path and walks back
+//! to the most recent block that actually generated a modifier (observed live:
+//! tip 729 but modifier from height 727). Against an unpatched node,
+//! [`staking_tip`] fails with an error naming exactly what is missing.
 
 use crate::rpc::NodeRpc;
 use lovenode_core::{NetworkTip, StakeCandidate};
@@ -50,6 +52,16 @@ pub fn hash_from_display_hex(hex: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+/// Parse the 16-hex-digit stake modifier exactly. Rejects anything else rather
+/// than guessing — a wrong modifier produces stakes that silently never win.
+pub fn parse_modifier_hex(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if s.len() != 16 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("stake_modifier is not 16 hex digits: {s:?}"));
+    }
+    u64::from_str_radix(s, 16).map_err(|e| format!("stake_modifier: {e}"))
+}
+
 /// Fetch the current staking tip from the node.
 pub fn staking_tip(rpc: &NodeRpc) -> Result<StakingTip, String> {
     let v = rpc.call(STAKING_INFO_RPC, json!([])).map_err(|e| {
@@ -62,7 +74,14 @@ pub fn staking_tip(rpc: &NodeRpc) -> Result<StakingTip, String> {
 
     let get_u64 = |k: &str| v.get(k).and_then(|x| x.as_u64());
     let height = get_u64("height").ok_or("staking info: missing height")?;
-    let stake_modifier = get_u64("stake_modifier").ok_or("staking info: missing stake_modifier")?;
+    // The modifier arrives as a 16-hex string, not a number: it is a full 64-bit
+    // value and JSON numbers pass through doubles in many parsers, which would
+    // silently corrupt the low bits and make every win-check wrong.
+    let stake_modifier = parse_modifier_hex(
+        v.get("stake_modifier")
+            .and_then(|x| x.as_str())
+            .ok_or("staking info: missing stake_modifier")?,
+    )?;
     let bits = get_u64("bits").ok_or("staking info: missing bits")? as u32;
     let tip_time = get_u64("tip_time").ok_or("staking info: missing tip_time")? as u32;
     let tip_hash = hash_from_display_hex(
@@ -146,6 +165,18 @@ mod tests {
 
         let d2 = format!("{}{}", "ff", "00".repeat(31));
         assert_eq!(hash_from_display_hex(&d2).unwrap()[31], 0xff);
+    }
+
+    #[test]
+    fn modifier_hex_must_be_exact() {
+        // the real value observed from a node
+        assert_eq!(parse_modifier_hex("07b7eee9afb103fb").unwrap(), 0x07b7_eee9_afb1_03fb);
+        assert_eq!(parse_modifier_hex("ffffffffffffffff").unwrap(), u64::MAX);
+        assert_eq!(parse_modifier_hex("0000000000000000").unwrap(), 0);
+        // anything else fails loudly rather than guessing
+        for bad in ["", "7b7eee9afb103fb", "07b7eee9afb103fb0", "zzzzzzzzzzzzzzzz", "0x07b7eee9"] {
+            assert!(parse_modifier_hex(bad).is_err(), "should reject {bad:?}");
+        }
     }
 
     #[test]

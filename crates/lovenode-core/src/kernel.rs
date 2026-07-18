@@ -175,6 +175,45 @@ mod tests {
         assert_eq!(&got[..], &d2[..]);
     }
 
+    /// Vectors produced by a C++ oracle compiled against Divi's OWN
+    /// `CDataStream` and `Hash` (libbitcoin_util + libbitcoin_crypto), running
+    /// the function body copied verbatim from `ProofOfStakeCalculator.cpp`.
+    /// The oracle also confirmed the serialized preimage is exactly 52 bytes.
+    ///
+    /// This is the go/no-go proof that the Rust port is byte-identical to the
+    /// node. If any of these fail, every stake this software produces is
+    /// invalid — do not ship. Regenerate with `stakehash_ref` (see PROTOCOL.md).
+    #[test]
+    fn matches_the_cpp_node_byte_for_byte() {
+        fn hex(b: &[u8; 32]) -> String {
+            b.iter().map(|x| format!("{x:02x}")).collect()
+        }
+        let counting: [u8; 32] = std::array::from_fn(|i| i as u8);
+
+        // stake_hash(modifier, coinstake_start_time, prevout_n, prevout_hash, hashproof_timestamp)
+        assert_eq!(
+            hex(&stake_hash(7, 11, 3, &[0x5c; 32], 13)),
+            "85b7d6edde91abc3a897595521ee02dd61ebf563ec0ca8368bedda9e57d4afb7"
+        );
+        assert_eq!(
+            hex(&stake_hash(0x0123_4567_89ab_cdef, 1_700_000_000, 0, &[0x11; 32], 1_700_003_600)),
+            "3422a499d35fc61045b70af32d052e29c5bc620d6ef1868950ae6e24d8bc9516"
+        );
+        assert_eq!(
+            hex(&stake_hash(0, 0, 0, &[0x00; 32], 0)),
+            "a2fcf96babc27f6c7f411942179ae4618f78c6e01c2d804e6995a1c22849152a"
+        );
+        assert_eq!(
+            hex(&stake_hash(u64::MAX, u32::MAX, u32::MAX, &[0xff; 32], u32::MAX)),
+            "c842d3ce49ec0f4adced46b2a0e8d876049cc3b8685682336346f7b6f361e506"
+        );
+        // byte-order canary: internal byte i == i, so any endianness slip shows
+        assert_eq!(
+            hex(&stake_hash(1, 4, 3, &counting, 2)),
+            "b3db92f47773a8240ef17d55a0c3c6430dac3a0f41a42e9b7a81217dfa2b0dff"
+        );
+    }
+
     #[test]
     fn field_order_matters() {
         // Swapping any two fields must change the hash — guards against a
