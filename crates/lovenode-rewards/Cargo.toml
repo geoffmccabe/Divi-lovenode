@@ -1,0 +1,10 @@
+[package]
+name = "lovenode-rewards"
+description = "Pluggable NFD (Divi NFT) award hooks for LoveNode stake wins. Policy + sink traits; no minting here."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sha2 = "0.10"
