@@ -1,0 +1,12 @@
+[package]
+name = "lovenode-c2pa"
+description = "Divi Proof-of-Existence as a C2PA assertion: binds a Content Credential to an on-chain anchor."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lovenode-core = { path = "../lovenode-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

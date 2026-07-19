@@ -70,6 +70,8 @@ build if anyone ever adds a signable-digest field. Full rules in [docs/SECURITY.
 ```
 crates/lovenode-core     win-check + block/transaction serialization. No I/O, no
                          keys, no chain. Consensus-critical.
+crates/lovenode-sign     on-device signing (libsecp256k1). All key handling.
+crates/lovenode-c2pa     Divi anchors as C2PA Content Credentials.
 crates/lovenode-rewards  NFD (Divi NFT) award hooks — pluggable policy + sink.
 crates/lovenode-relay    node adapter, per-block search engine, phone protocol.
 app/                     phone client (Tauri 2 mobile) — scaffold.
@@ -132,6 +134,24 @@ Two traps worth knowing, both caught this way: Divi v4 headers are **112 bytes**
 (an accumulator checkpoint follows the nonce — hashing the usual 80 gives a wrong
 hash every time), and the correct stake modifier is **not** `tip->nStakeModifier`
 but the most recent block that actually generated one.
+
+## C2PA Content Credentials
+
+A Divi anchor is carried inside a standard **C2PA Content Credential** via the
+`love.divi.poe` assertion, so anchored content verifies in Adobe's ecosystem,
+newsroom tooling and camera firmware — software that has never heard of Divi.
+
+C2PA deliberately uses **no blockchain**; it signs with X.509 certificates. That
+has one structural weakness: certificates expire, get revoked, and their
+authorities eventually disappear, taking the credential's meaning with them. An
+anchor does not rot. C2PA proves *who signed and what was done*; the anchor
+proves *by when it existed*. Spec: [docs/C2PA-ASSERTION.md](docs/C2PA-ASSERTION.md).
+
+Two things that spec is blunt about, because both are easy to get wrong:
+embedding a manifest changes the file's bytes, so the anchored hash is either of
+the pre-manifest or post-manifest asset and **which one must be recorded**; and
+neither C2PA nor a blockchain can prove the camera saw reality rather than a
+convincing screen.
 
 ## Platform reality
 

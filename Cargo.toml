@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/lovenode-c2pa",
     "crates/lovenode-core",
     "crates/lovenode-rewards",
     "crates/lovenode-relay",
