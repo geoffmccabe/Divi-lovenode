@@ -4,6 +4,7 @@ members = [
     "crates/lovenode-core",
     "crates/lovenode-rewards",
     "crates/lovenode-relay",
+    "crates/lovenode-sign",
 ]
 
 [workspace.package]

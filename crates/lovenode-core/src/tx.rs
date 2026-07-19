@@ -16,7 +16,7 @@
 //! **The phone builds this itself** and must confirm it pays back to its own
 //! address before signing (see `docs/SECURITY.md`).
 
-use crate::serialize::{display_hex, dsha256, write_compact_size, write_var_bytes};
+use crate::serialize::{display_hex, dsha256, write_compact_size, write_var_bytes, Reader};
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct OutPoint {
@@ -91,6 +91,37 @@ impl Transaction {
 
         out.extend_from_slice(&self.lock_time.to_le_bytes());
         out
+    }
+
+    /// Parse a transaction from raw wire bytes. Bounds-checked throughout:
+    /// hostile or truncated input errors rather than panicking.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, String> {
+        let mut r = Reader::new(bytes);
+        let version = r.read_i32()?;
+
+        let vin_count = r.read_compact_size()?;
+        let mut vin = Vec::new();
+        for _ in 0..vin_count {
+            let hash = r.read_hash()?;
+            let n = r.read_u32()?;
+            let script_sig = r.read_var_bytes()?;
+            let sequence = r.read_u32()?;
+            vin.push(TxIn { prevout: OutPoint { hash, n }, script_sig, sequence });
+        }
+
+        let vout_count = r.read_compact_size()?;
+        let mut vout = Vec::new();
+        for _ in 0..vout_count {
+            let value = r.read_i64()?;
+            let script_pubkey = r.read_var_bytes()?;
+            vout.push(TxOut { value, script_pubkey });
+        }
+
+        let lock_time = r.read_u32()?;
+        if !r.is_empty() {
+            return Err(format!("{} trailing bytes after transaction", r.remaining()));
+        }
+        Ok(Transaction { version, vin, vout, lock_time })
     }
 
     /// Transaction id (internal byte order).
@@ -285,6 +316,36 @@ mod tests {
         let mut other3 = base;
         other3.vout[1].value = 11;
         assert_ne!(other3.txid(), id);
+    }
+
+    // A REAL coinstake produced by Divi's own staking code (regtest block 700).
+    const RAW_COINSTAKE: &str = "010000000167acc570ae2ca4152ff64d563c9b8e6f599c7315c3ae15fffd4aeff2968a111f010000006a473044022003170165c75f0f70e340838caf76adc73eec191991109bcff0e8f3b6fbaf256102205e883516dc54346e37db77670c625054436dc24444a84d074bc9bc6e4916cc09012103237960bdd77ac3cc98792328c3454a131219c0197cb0f51c827550733fa5220bffffffff03000000000000000000004801a69c0000001976a914f8a5f85e154b663bca343ba47fd6fadef43bcef288ac00ba1dd2050000001976a914357f730ffd65afb707e8860ae7b1b227019a4e9088ac00000000";
+    const COINSTAKE_TXID: &str = "2ceefc9345840938dd8baffd0fa1383c547f099affd8b990dbe2557b8590e1ab";
+
+    #[test]
+    fn parses_a_real_coinstake_and_re_emits_it_byte_for_byte() {
+        let raw = from_hex(RAW_COINSTAKE).unwrap();
+        let tx = Transaction::deserialize(&raw).unwrap();
+
+        // structure matches what the node reported
+        assert!(tx.is_coinstake());
+        assert_eq!(tx.vout.len(), 3);
+        assert!(tx.vout[0].is_empty());
+        assert_eq!(tx.vin.len(), 1);
+
+        // and both directions agree with the node
+        assert_eq!(to_hex(&tx.serialize()), RAW_COINSTAKE);
+        assert_eq!(tx.txid_hex(), COINSTAKE_TXID);
+    }
+
+    #[test]
+    fn deserialize_rejects_truncated_and_trailing_garbage() {
+        let raw = from_hex(RAW_COINSTAKE).unwrap();
+        assert!(Transaction::deserialize(&raw[..raw.len() - 4]).is_err(), "truncated");
+        let mut extra = raw.clone();
+        extra.push(0x00);
+        assert!(Transaction::deserialize(&extra).is_err(), "trailing bytes");
+        assert!(Transaction::deserialize(&[]).is_err());
     }
 
     #[test]

@@ -37,6 +37,71 @@ pub fn write_var_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
+/// A bounds-checked cursor for reading wire-format data. Every read is checked,
+/// so hostile or truncated input produces an error rather than a panic.
+pub struct Reader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.remaining() == 0
+    }
+
+    pub fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
+        if self.remaining() < n {
+            return Err(format!("unexpected end of data (wanted {n}, have {})", self.remaining()));
+        }
+        let out = &self.data[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(out)
+    }
+
+    pub fn read_u32(&mut self) -> Result<u32, String> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes")))
+    }
+
+    pub fn read_i32(&mut self) -> Result<i32, String> {
+        Ok(i32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes")))
+    }
+
+    pub fn read_i64(&mut self) -> Result<i64, String> {
+        Ok(i64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes")))
+    }
+
+    pub fn read_hash(&mut self) -> Result<[u8; 32], String> {
+        Ok(self.take(32)?.try_into().expect("32 bytes"))
+    }
+
+    pub fn read_compact_size(&mut self) -> Result<u64, String> {
+        let first = self.take(1)?[0];
+        Ok(match first {
+            0xff => u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes")),
+            0xfe => u32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes")) as u64,
+            0xfd => u16::from_le_bytes(self.take(2)?.try_into().expect("2 bytes")) as u64,
+            n => n as u64,
+        })
+    }
+
+    pub fn read_var_bytes(&mut self) -> Result<Vec<u8>, String> {
+        let len = self.read_compact_size()?;
+        // Guard against a hostile length claiming gigabytes.
+        if len as usize > self.remaining() {
+            return Err(format!("script length {len} exceeds remaining {}", self.remaining()));
+        }
+        Ok(self.take(len as usize)?.to_vec())
+    }
+}
+
 /// Parse a 64-hex hash in *display* order (as RPC and explorers show it) into
 /// the internal byte order used for hashing. Divi, like Bitcoin, reverses these
 /// for display — mixing the two up is the single easiest way to break everything.

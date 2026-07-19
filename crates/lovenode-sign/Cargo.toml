@@ -1,0 +1,15 @@
+[package]
+name = "lovenode-sign"
+description = "On-device signing for LoveNode: sighash, coinstake input signatures, and block signatures."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lovenode-core = { path = "../lovenode-core" }
+# libsecp256k1 bindings -- the same C library the Divi node itself uses, so
+# signatures are produced by identical code rather than a reimplementation.
+secp256k1 = { version = "0.29", features = ["recovery", "std"] }
+ripemd = "0.1"
+sha2 = "0.10"
