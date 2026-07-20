@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 lovenode-core = { path = "../lovenode-core" }
 lovenode-rewards = { path = "../lovenode-rewards" }
+lovenode-sign = { path = "../lovenode-sign" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["json"] }
