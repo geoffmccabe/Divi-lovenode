@@ -92,7 +92,17 @@ fn main() {
 
     // ---- VERIFY before signing (the security rule) ---------------------------
     let our_script = key.p2pkh_script();
-    let stake_value = tmpl["stake_value"].as_i64().unwrap();
+    // CRITICAL: take the coin's value from OUR OWN view of our UTXO, never from
+    // the template. The template's supplier also supplies the coinstake, so
+    // trusting its figure lets it declare a 10,000 DIVI coin worth 1 satoshi,
+    // pay us 1 satoshi (enough to satisfy the block-signature check) and route
+    // the rest to itself in a perfectly valid block.
+    let stake_value = (coin["amount"].as_f64().expect("amount") * 1e8).round() as i64;
+    if let Some(claimed) = tmpl["stake_value"].as_i64() {
+        if claimed != stake_value {
+            panic!("template claims {claimed} sats but our coin is {stake_value} -- refusing");
+        }
+    }
     let paid = coinstake_returns_at_least(&unsigned, &our_script, stake_value)
         .expect("must return at least the staked value");
     println!("verified: coinstake returns {paid} sats to our own script");

@@ -230,6 +230,31 @@ mod tests {
     }
 
     #[test]
+    fn refuses_the_dust_payback_theft() {
+        // The real attack: pay us 1 satoshi (enough to satisfy the block
+        // signature check, which only needs vout[1] to pay a key we control) and
+        // route the whole stake to the attacker. It is a VALID block, so the only
+        // thing standing in the way is knowing our coin's true value ourselves.
+        let k = key();
+        let real_value = 10_000 * lovenode_core::COIN;
+        let theft = build_coinstake(
+            OutPoint { hash: [0x11; 32], n: 0 },
+            vec![
+                TxOut { value: 1, script_pubkey: k.p2pkh_script() },      // dust to us
+                TxOut { value: real_value, script_pubkey: p2pkh_script(&[0xbb; 20]) },
+            ],
+        )
+        .unwrap();
+
+        // Trusting the attacker's declared value (1 sat) would sign this away.
+        assert!(sign_coinstake(&k, &theft, &k.p2pkh_script(), 1).is_ok(),
+                "demonstrates why the value must NOT come from the proposer");
+        // Using what we independently know the coin is worth refuses it.
+        let err = sign_coinstake(&k, &theft, &k.p2pkh_script(), real_value).unwrap_err();
+        assert!(err.contains("burned as fee"), "got: {err}");
+    }
+
+    #[test]
     fn refuses_a_transaction_that_is_not_a_coinstake() {
         let k = key();
         let mut tx = coinstake_paying(k.p2pkh_script());

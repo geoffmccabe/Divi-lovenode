@@ -181,12 +181,14 @@ pub fn coinstake_pays_to(tx: &Transaction, expected_script: &[u8]) -> Result<i64
     if !tx.is_coinstake() {
         return Err("not a coinstake (first output must be empty)".into());
     }
+    // Saturating: a hostile transaction can carry outputs summing past i64::MAX,
+    // which panics a debug build and wraps silently in release.
     let paid: i64 = tx
         .vout
         .iter()
         .filter(|o| o.script_pubkey == expected_script)
         .map(|o| o.value)
-        .sum();
+        .fold(0i64, |acc, v| acc.saturating_add(v));
     if paid <= 0 {
         return Err("coinstake pays nothing back to the staker".into());
     }

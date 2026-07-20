@@ -94,8 +94,10 @@ impl<'a> Reader<'a> {
 
     pub fn read_var_bytes(&mut self) -> Result<Vec<u8>, String> {
         let len = self.read_compact_size()?;
-        // Guard against a hostile length claiming gigabytes.
-        if len as usize > self.remaining() {
+        // Compare in u64: `len as usize` truncates on 32-bit targets (armv7
+        // Android), so a claimed length of 2^32+n would pass this check and then
+        // read only n bytes.
+        if len > self.remaining() as u64 {
             return Err(format!("script length {len} exceeds remaining {}", self.remaining()));
         }
         Ok(self.take(len as usize)?.to_vec())

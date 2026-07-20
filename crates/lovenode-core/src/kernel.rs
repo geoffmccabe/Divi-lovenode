@@ -80,8 +80,13 @@ pub fn stake_hash(
 /// Coin-age weight, capped at [`MAX_COIN_AGE_WEIGHT`]. Negative (timestamp
 /// before the coin existed) clamps to zero, which can never hit a target.
 pub fn coin_age_weight(hashproof_timestamp: u32, coinstake_start_time: u32) -> i64 {
-    let elapsed = hashproof_timestamp as i64 - coinstake_start_time as i64;
-    elapsed.clamp(0, MAX_COIN_AGE_WEIGHT)
+    // The node computes this as a subtraction of two `unsigned int`s, so a
+    // timestamp BEFORE the coin's start time wraps modulo 2^32 into a huge
+    // positive value and therefore the MAXIMUM weight. That is arguably a bug in
+    // Divi, but consensus is consensus: clamping to zero here would make us miss
+    // stakes the network would happily accept.
+    let elapsed = hashproof_timestamp.wrapping_sub(coinstake_start_time) as i64;
+    elapsed.min(MAX_COIN_AGE_WEIGHT)
 }
 
 /// `stakeTargetHit`: does this proof hash meet the weighted target?
@@ -102,8 +107,13 @@ pub fn target_hit(proof_hash: &[u8; 32], value_sats: i64, bits: u32, time_weight
         return true; // absurdly large weight => unbounded target => hit
     };
 
+    // An oversized exponent is NOT an unbounded target. Divi calls SetCompact
+    // with a NULL overflow flag and base_uint::operator<<= silently TRUNCATES,
+    // so a shift of >=256 yields a target of exactly ZERO -- nothing ever wins.
+    // Returning true here would let a relay send absurd `bits` and have
+    // verify_win() rubber-stamp a fabricated win.
     let Some(base_target) = U256::set_compact(bits) else {
-        return true; // exponent overflow => unbounded target
+        return false;
     };
     match base_target.checked_mul_u64(weight_u64) {
         // Overflow means the target exceeds 2^256, i.e. every hash is below it.
@@ -228,15 +238,40 @@ mod tests {
     fn coin_age_weight_caps_and_clamps() {
         assert_eq!(coin_age_weight(1_000, 400), 600);
         assert_eq!(coin_age_weight(u32::MAX, 0), MAX_COIN_AGE_WEIGHT);
-        // timestamp before the coin existed cannot earn weight
-        assert_eq!(coin_age_weight(100, 500), 0);
+    }
+
+    #[test]
+    fn an_absurd_difficulty_exponent_never_wins_rather_than_always_winning() {
+        // Divi's SetCompact silently TRUNCATES an oversized shift to zero, so
+        // nothing can win. If we treated it as "unbounded target => always hit",
+        // a relay could send absurd bits and have verify_win() rubber-stamp a
+        // fabricated win. Direction matters more than the value here.
+        let c = coin();
+        for bits in [0x2300_0001u32, 0x2500_ffff, 0xff00_ffff] {
+            let tip = NetworkTip { stake_modifier: 42, bits };
+            let hits = (c.coinstake_start_time + 3_600..c.coinstake_start_time + 3_700)
+                .filter(|t| check_win(&tip, &c, *t).is_some())
+                .count();
+            assert_eq!(hits, 0, "bits {bits:#x} truncates to a zero target; nothing may win");
+        }
+    }
+
+    #[test]
+    fn coin_age_wraps_like_the_node_rather_than_clamping() {
+        // The node subtracts two unsigned ints, so a timestamp BEFORE the coin's
+        // start wraps to a huge value and yields MAXIMUM weight. Clamping to zero
+        // would make us miss stakes the network accepts.
+        assert_eq!(coin_age_weight(100, 500), MAX_COIN_AGE_WEIGHT);
+        // normal ordering is unaffected
+        assert_eq!(coin_age_weight(1_000, 400), 600);
+        assert_eq!(coin_age_weight(u32::MAX, 0), MAX_COIN_AGE_WEIGHT);
     }
 
     #[test]
     fn zero_weight_or_value_never_wins() {
         assert!(!target_hit(&[0u8; 32], 0, 0x1d00_ffff, 600));
         assert!(!target_hit(&[0u8; 32], 100 * COIN, 0x1d00_ffff, 0));
-        // and a coin at its own start time has no age, so it cannot win
+        // a coin at exactly its own start time has zero age, so it cannot win
         let c = coin();
         let tip = NetworkTip { stake_modifier: 42, bits: 0x1d00_ffff };
         assert!(check_win(&tip, &c, c.coinstake_start_time).is_none());
