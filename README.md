@@ -178,6 +178,12 @@ DIVI_DATADIR=~/.divi cargo run -p lovenode-relay -- check
 DIVI_DATADIR=~/.divi cargo run -p lovenode-relay -- watch <address>...
 ```
 
+## Working on another Divi project?
+
+Read **[docs/FOR-OTHER-AGENTS.md](docs/FOR-OTHER-AGENTS.md)** — what exists, which
+crates to depend on, the node RPCs added, the hard-won facts about Divi's block
+format that break naive implementations, and the security rules to inherit.
+
 ## Licence
 
 MIT, matching Divi Core.
