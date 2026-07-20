@@ -5,12 +5,20 @@
 
 use serde_json::{json, Value};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NodeRpc {
     url: String,
     user: String,
     pass: String,
     timeout_secs: u64,
+}
+
+// Hand-written so the RPC password can never reach a log through a debug format,
+// the same care StakingKey takes with key material.
+impl std::fmt::Debug for NodeRpc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeRpc").field("url", &self.url).field("pass", &"<redacted>").finish()
+    }
 }
 
 impl NodeRpc {

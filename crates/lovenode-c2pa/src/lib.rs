@@ -161,6 +161,22 @@ pub fn verify_against_record(
     assertion.validate()?;
     let record = parse_poe_record(record_script_hex)
         .ok_or("the transaction carries no Divi PoE record")?;
+    // The chain must agree with what the assertion declares about itself.
+    // Without this, a record anchoring a hash under a different algorithm or a
+    // future layout is accepted as a SHA-256 v1 anchor.
+    if record.version != ASSERTION_VERSION as u8 {
+        return Err(format!(
+            "on-chain record is version {} but the manifest declares {ASSERTION_VERSION}",
+            record.version
+        ));
+    }
+    if record.hash_alg != 0x01 {
+        return Err(format!(
+            "on-chain record uses hash algorithm 0x{:02x}, not SHA-256, but the manifest \
+             declares \"{}\"",
+            record.hash_alg, assertion.hash_alg
+        ));
+    }
     let claimed = assertion.document_hash.trim().to_lowercase();
     if record.document_hash != claimed {
         return Err(format!(

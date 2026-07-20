@@ -49,7 +49,27 @@ impl WinNotice {
     /// Re-check the relay's claim locally before doing any signing work.
     /// The phone must call this: it is what turns "trust the relay" into
     /// "verify the relay". Returns the proof hash on success.
+    /// A hostile relay must not be able to exhaust a phone's memory. The doc
+    /// tells the phone not to validate these transactions but to hash them all,
+    /// so an unbounded list is a denial-of-service straight at the device.
+    pub const MAX_MEMPOOL_TXS: usize = 4_000;
+    pub const MAX_MEMPOOL_BYTES: usize = 2 * 1024 * 1024;
+
     pub fn verify_win(&self) -> Result<[u8; 32], String> {
+        if self.mempool_txs_hex.len() > Self::MAX_MEMPOOL_TXS {
+            return Err(format!(
+                "win notice carries {} transactions, over the {} limit",
+                self.mempool_txs_hex.len(),
+                Self::MAX_MEMPOOL_TXS
+            ));
+        }
+        let total: usize = self.mempool_txs_hex.iter().map(|t| t.len()).sum();
+        if total > Self::MAX_MEMPOOL_BYTES {
+            return Err(format!(
+                "win notice carries {total} bytes of transactions, over the {} limit",
+                Self::MAX_MEMPOOL_BYTES
+            ));
+        }
         let prevout_hash = crate::chain::hash_from_display_hex(&self.prevout_txid)?;
         let coin = lovenode_core::StakeCandidate {
             prevout_hash,
@@ -138,6 +158,17 @@ mod tests {
         // Very easy target: the claim should check out on the device.
         let n = notice(0x2100_ffff, 1_700_003_600);
         assert!(n.verify_win().is_ok());
+    }
+
+    #[test]
+    fn an_oversized_transaction_list_is_refused() {
+        let mut n = notice(0x2100_ffff, 1_700_003_600);
+        n.mempool_txs_hex = vec!["00".repeat(64); WinNotice::MAX_MEMPOOL_TXS + 1];
+        assert!(n.verify_win().is_err(), "must refuse an unbounded tx list");
+
+        let mut big = notice(0x2100_ffff, 1_700_003_600);
+        big.mempool_txs_hex = vec!["ab".repeat(600_000); 3];
+        assert!(big.verify_win().is_err(), "must refuse oversized payloads");
     }
 
     #[test]

@@ -38,6 +38,10 @@ pub struct StakeWin {
     pub block_height: u64,
     /// Hash of the block this user just staked, internal byte order.
     pub block_hash: [u8; 32],
+    /// The stake kernel proof hash for this win. Unlike the block hash, this
+    /// cannot be varied without finding *another winning timestamp*, so it is
+    /// the only per-win value a staker cannot cheaply grind.
+    pub proof_hash: [u8; 32],
     /// Block timestamp (unix seconds).
     pub block_time: u32,
     /// The address that won the stake — the prospective NFD recipient.
@@ -86,13 +90,19 @@ pub trait AwardSink: Send + Sync {
 /// The choice is a real trade-off, so it is explicit rather than baked in:
 #[derive(Clone, Debug)]
 pub enum RollSource {
-    /// Derived from the block hash. **Publicly verifiable** — anyone can
-    /// recompute the roll and confirm an award was legitimate.
-    ///
-    /// Caveat: a staker can in principle nudge their block hash to fish for a
-    /// better roll, but only by first *winning a stake*, so attempts are rate
-    /// limited by their stake weight. Acceptable for a cosmetic game item;
-    /// use [`RollSource::ServerSecret`] if awards ever carry real value.
+    /// Derived from the **stake kernel proof hash**. Publicly verifiable — the
+    /// proof is recomputable from public chain data — *and* not grindable: the
+    /// proof hash is fixed by (modifier, coin, winning timestamp), so varying it
+    /// requires finding another winning timestamp, which really is rate limited
+    /// by stake weight.
+    StakeProof,
+    /// **Do not use.** Derived from the block hash, which the staker still
+    /// controls through the header nonce, time and merkle root — none of which
+    /// feed the stake kernel, so they can be varied freely *after* winning and
+    /// before signing. Measured: an award at the 1-in-64 floor was found after
+    /// ~408 nonce values, i.e. microseconds. That turns every win into a
+    /// guaranteed award and destroys the schedule.
+    #[deprecated(note = "grindable via header nonce; use StakeProof or ServerSecret")]
     BlockHash,
     /// HMAC-style roll mixing in a server secret. **Not** publicly verifiable,
     /// but cannot be ground by the staker at all.
@@ -104,7 +114,12 @@ impl RollSource {
     pub fn roll(&self, win: &StakeWin) -> u64 {
         let mut h = Sha256::new();
         h.update(b"lovenode/nfd/v1");
-        h.update(win.block_hash);
+        match self {
+            RollSource::StakeProof => h.update(win.proof_hash),
+            #[allow(deprecated)]
+            RollSource::BlockHash => h.update(win.block_hash),
+            RollSource::ServerSecret(_) => h.update(win.proof_hash),
+        }
         h.update(win.block_height.to_le_bytes());
         if let RollSource::ServerSecret(secret) = self {
             h.update(secret);
@@ -166,16 +181,34 @@ impl DiminishingPolicy {
             max_total_awards: None,      // uncapped — see the note in README
             min_stake_sats: 0,           // any staker is eligible
             series: series.into(),
-            // Publicly verifiable by default: anyone can recompute a roll from the
-            // block hash and confirm an award was legitimate.
-            roll_source: RollSource::BlockHash,
+            // Publicly verifiable AND ungrindable: the stake proof cannot be
+            // varied without winning again.
+            roll_source: RollSource::StakeProof,
         }
     }
 
     /// The chance, in ppm, that applies at a given moment.
+    /// Reject configurations that would silently disable the decay.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(self.half_life_days.is_finite() && self.half_life_days > 0.0) {
+            return Err(format!(
+                "half_life_days must be finite and positive, got {}; a NaN or negative \
+                 value would silently pin the chance at launch odds forever",
+                self.half_life_days
+            ));
+        }
+        if self.initial_chance_ppm > PPM || self.floor_chance_ppm > PPM {
+            return Err("chances cannot exceed 100% (1_000_000 ppm)".into());
+        }
+        if self.floor_chance_ppm > self.initial_chance_ppm {
+            return Err("floor cannot exceed the initial chance".into());
+        }
+        Ok(())
+    }
+
     pub fn chance_ppm_at(&self, now: u32, state: &AwardState) -> u64 {
         let elapsed = now.saturating_sub(state.program_start_time) as f64 / SECS_PER_DAY;
-        let decayed = if self.half_life_days > 0.0 {
+        let decayed = if self.half_life_days.is_finite() && self.half_life_days > 0.0 {
             self.initial_chance_ppm as f64 * 0.5_f64.powf(elapsed / self.half_life_days)
         } else {
             self.initial_chance_ppm as f64
@@ -260,7 +293,7 @@ mod tests {
             max_total_awards: None,
             min_stake_sats: 0,
             series: "genesis".into(),
-            roll_source: RollSource::BlockHash,
+            roll_source: RollSource::StakeProof,
         }
     }
 
@@ -268,6 +301,7 @@ mod tests {
         StakeWin {
             block_height: height,
             block_hash: [seed; 32],
+            proof_hash: [seed ^ 0x5a; 32],
             block_time: time,
             staker_address: "DTestAddress".into(),
             stake_value_sats: 1_000 * 100_000_000,
@@ -369,15 +403,48 @@ mod tests {
         assert_eq!(a, b, "same win must always produce the same decision");
         if let Some(award) = a {
             // the recorded roll must reproduce independently
-            assert_eq!(award.roll, RollSource::BlockHash.roll(&w));
+            assert_eq!(award.roll, RollSource::StakeProof.roll(&w));
         }
     }
 
     #[test]
+    fn the_roll_cannot_be_ground_through_the_block_hash() {
+        // A staker controls the header nonce, time and merkle root AFTER winning,
+        // and none of them feed the stake kernel -- so a roll derived from the
+        // block hash could be re-rolled for free until an award landed, turning
+        // every win into a guaranteed NFD. The stake proof cannot be varied
+        // without finding another winning timestamp.
+        let base = win_at(1, T0, 7);
+        let baseline = RollSource::StakeProof.roll(&base);
+        for nonce_attempt in 0u8..=255 {
+            let reground = StakeWin { block_hash: [nonce_attempt; 32], ..base.clone() };
+            assert_eq!(
+                RollSource::StakeProof.roll(&reground), baseline,
+                "regrinding the block hash must not change the roll"
+            );
+        }
+        // but a genuinely different win (different proof) does roll differently
+        let other = StakeWin { proof_hash: [0xee; 32], ..base };
+        assert_ne!(RollSource::StakeProof.roll(&other), baseline);
+    }
+
+    #[test]
+    fn rejects_configurations_that_would_silently_disable_decay() {
+        let good = DiminishingPolicy::divi_card_game("genesis");
+        assert!(good.validate().is_ok());
+        for bad_half_life in [f64::NAN, -30.0, 0.0, f64::INFINITY] {
+            let p = DiminishingPolicy { half_life_days: bad_half_life, ..good.clone() };
+            assert!(p.validate().is_err(), "must reject half_life {bad_half_life}");
+        }
+        let p = DiminishingPolicy { floor_chance_ppm: PPM, ..good.clone() };
+        assert!(p.validate().is_err(), "floor above initial must be rejected");
+    }
+
+    #[test]
     fn different_blocks_roll_differently() {
-        let a = RollSource::BlockHash.roll(&win_at(1, T0, 1));
-        let b = RollSource::BlockHash.roll(&win_at(1, T0, 2));
-        let c = RollSource::BlockHash.roll(&win_at(2, T0, 1));
+        let a = RollSource::StakeProof.roll(&win_at(1, T0, 1));
+        let b = RollSource::StakeProof.roll(&win_at(1, T0, 2));
+        let c = RollSource::StakeProof.roll(&win_at(2, T0, 1));
         assert_ne!(a, b, "different block hash => different roll");
         assert_ne!(a, c, "different height => different roll");
     }
@@ -385,7 +452,7 @@ mod tests {
     #[test]
     fn server_secret_changes_the_roll_and_stays_stable() {
         let w = win_at(1, T0, 3);
-        let public = RollSource::BlockHash.roll(&w);
+        let public = RollSource::StakeProof.roll(&w);
         let secret = RollSource::ServerSecret(b"topsecret".to_vec());
         assert_ne!(public, secret.roll(&w));
         assert_eq!(secret.roll(&w), secret.roll(&w));

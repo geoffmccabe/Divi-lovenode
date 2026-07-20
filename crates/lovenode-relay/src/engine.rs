@@ -52,8 +52,20 @@ impl Engine {
 
         let mut wins = Vec::new();
         for staker in stakers {
-            for coin in &staker.coins {
-                if let Some((ts, proof_hash)) = search_window(&tip.tip, coin, from, to) {
+            // Take the EARLIEST winning timestamp across all of this staker's
+            // coins, not merely the first coin that wins somewhere in the window.
+            // On a 60-second target, publishing seconds later than necessary is a
+            // large chance of being beaten to the height -- pure lost earnings.
+            let best = staker
+                .coins
+                .iter()
+                .filter_map(|coin| {
+                    search_window(&tip.tip, coin, from, to).map(|(ts, h)| (ts, h, coin))
+                })
+                .min_by_key(|(ts, _, _)| *ts);
+
+            if let Some((ts, proof_hash, coin)) = best {
+                {
                     wins.push(FoundWin {
                         device_token: staker.device_token.clone(),
                         proof_hash,
@@ -70,8 +82,6 @@ impl Engine {
                             mempool_txs_hex: Vec::new(),
                         },
                     });
-                    // One win per staker per block is all that can be used.
-                    break;
                 }
             }
         }
@@ -89,6 +99,7 @@ impl Engine {
         state: &AwardState,
         staker: &Staker,
         block_hash: [u8; 32],
+        proof_hash: [u8; 32],
         height: u64,
         block_time: u32,
         stake_value_sats: i64,
@@ -96,6 +107,7 @@ impl Engine {
         let win = StakeWin {
             block_height: height,
             block_hash,
+            proof_hash,
             block_time,
             staker_address: staker.payout_address.clone(),
             stake_value_sats,
@@ -185,6 +197,36 @@ mod tests {
     }
 
     #[test]
+    fn picks_the_earliest_winning_timestamp_not_the_first_winning_coin() {
+        // With several winning coins, publishing at the earliest possible second
+        // matters: on a 60-second target, a later timestamp is a real chance of
+        // losing the height to another staker.
+        let e = Engine::default();
+        let mut s = staker(1_000 * COIN);
+        s.coins = (0..40)
+            .map(|i| StakeCandidate { prevout_n: i, ..s.coins[0].clone() })
+            .collect();
+        let t = tip(0x1e00_ffff); // hard enough that coins win at differing times
+        let now = 1_700_000_100;
+        let wins = e.search(&t, &[s.clone()], now);
+
+        if let Some(w) = wins.first() {
+            let from = now.max(t.tip_time + 1);
+            let earliest = s
+                .coins
+                .iter()
+                .filter_map(|c| lovenode_core::search_window(&t.tip, c, from, from + 90))
+                .map(|(ts, _)| ts)
+                .min()
+                .expect("at least one win");
+            assert_eq!(
+                w.notice.hashproof_timestamp, earliest,
+                "must publish at the earliest winning second"
+            );
+        }
+    }
+
+    #[test]
     fn award_hook_runs_after_acceptance_and_is_optional() {
         let e = Engine::default();
         let s = staker(1_000 * COIN);
@@ -198,17 +240,17 @@ mod tests {
             max_total_awards: None,
             min_stake_sats: 0,
             series: "genesis".into(),
-            roll_source: RollSource::BlockHash,
+            roll_source: RollSource::StakeProof,
         };
         let got = e.award_for_accepted_block(
-            &always, &sink, &state, &s, [0x44; 32], 1_001, 1_700_000_060, 1_000 * COIN,
+            &always, &sink, &state, &s, [0x44; 32], [0x77; 32], 1_001, 1_700_000_060, 1_000 * COIN,
         );
         assert!(got.is_some());
         assert_eq!(sink.awards.lock().unwrap().len(), 1);
 
         let never = DiminishingPolicy { initial_chance_ppm: 0, ..always };
         let none = e.award_for_accepted_block(
-            &never, &sink, &state, &s, [0x55; 32], 1_002, 1_700_000_120, 1_000 * COIN,
+            &never, &sink, &state, &s, [0x55; 32], [0x88; 32], 1_002, 1_700_000_120, 1_000 * COIN,
         );
         assert!(none.is_none(), "a zero chance must never award");
     }

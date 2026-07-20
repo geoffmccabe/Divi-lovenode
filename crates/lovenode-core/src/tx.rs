@@ -193,6 +193,34 @@ pub fn coinstake_pays_to(tx: &Transaction, expected_script: &[u8]) -> Result<i64
     Ok(paid)
 }
 
+/// Check the coinstake returns **at least** `min_expected_sats` to our script.
+///
+/// This is the guard that [`coinstake_pays_to`] alone is not: knowing that
+/// *some* value comes back is not enough, because the difference between the
+/// input and the outputs is simply paid away as fee.
+///
+/// Concretely, without this check a relay that under-reports a coin's value
+/// causes a coinstake which spends the real (large) output but pays back only
+/// the small declared amount — and the remainder is burned. That is loss of
+/// principal, not lost earnings.
+///
+/// `min_expected_sats` must come from what the **signer independently knows**
+/// the staked coin is worth, never from the party proposing the coinstake.
+pub fn coinstake_returns_at_least(
+    tx: &Transaction,
+    expected_script: &[u8],
+    min_expected_sats: i64,
+) -> Result<i64, String> {
+    let paid = coinstake_pays_to(tx, expected_script)?;
+    if paid < min_expected_sats {
+        return Err(format!(
+            "coinstake returns only {paid} sats but the staked coin is worth at least \
+             {min_expected_sats}; the difference would be burned as fee"
+        ));
+    }
+    Ok(paid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

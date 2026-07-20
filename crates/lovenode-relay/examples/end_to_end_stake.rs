@@ -9,7 +9,7 @@
 
 use lovenode_core::block::{merkle_root, BlockHeader};
 use lovenode_core::serialize::{display_hex, from_hex, hash_from_display_hex, to_hex};
-use lovenode_core::tx::{coinstake_pays_to, OutPoint, Transaction, TxIn, TxOut};
+use lovenode_core::tx::{coinstake_returns_at_least, OutPoint, Transaction, TxIn, TxOut};
 use lovenode_core::{check_win, NetworkTip, StakeCandidate};
 use lovenode_relay::rpc::NodeRpc;
 use lovenode_sign::{sign_block, sign_coinstake, StakingKey};
@@ -92,7 +92,9 @@ fn main() {
 
     // ---- VERIFY before signing (the security rule) ---------------------------
     let our_script = key.p2pkh_script();
-    let paid = coinstake_pays_to(&unsigned, &our_script).expect("must pay back to us");
+    let stake_value = tmpl["stake_value"].as_i64().unwrap();
+    let paid = coinstake_returns_at_least(&unsigned, &our_script, stake_value)
+        .expect("must return at least the staked value");
     println!("verified: coinstake returns {paid} sats to our own script");
 
     // ---- find a winning timestamp -------------------------------------------
@@ -102,7 +104,7 @@ fn main() {
     let candidate = StakeCandidate {
         prevout_hash: hash_from_display_hex(&txid).unwrap(),
         prevout_n: vout,
-        value_sats: tmpl["stake_value"].as_i64().unwrap(),
+        value_sats: stake_value,
         coinstake_start_time: coin_start_time(&rpc, &txid),
     };
     let now = std::time::SystemTime::now()
@@ -114,7 +116,7 @@ fn main() {
     println!("WIN at timestamp {win_time}");
 
     // ---- sign the coinstake (outside the node) -------------------------------
-    let signed = sign_coinstake(&key, &unsigned, &our_script).expect("sign coinstake");
+    let signed = sign_coinstake(&key, &unsigned, &our_script, stake_value).expect("sign coinstake");
 
     // ---- build the block ourselves and sign the header -----------------------
     let coinbase = deterministic_coinbase(height);

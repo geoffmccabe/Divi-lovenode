@@ -25,7 +25,7 @@ pub mod script;
 pub mod sighash;
 
 use lovenode_core::block::BlockHeader;
-use lovenode_core::tx::{coinstake_pays_to, Transaction};
+use lovenode_core::tx::{coinstake_returns_at_least, Transaction};
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::{Message, Secp256k1, SecretKey};
 
@@ -66,19 +66,25 @@ impl StakingKey {
 /// Sign the coinstake's single input, returning a fully-signed transaction.
 ///
 /// `script_code` is the scriptPubKey of the coin being staked.
+/// `staked_value_sats` is what the signer **independently knows** the staked
+/// coin is worth — never a figure supplied by whoever proposed the coinstake.
 ///
-/// Refuses to sign a coinstake that does not pay back to this key — the check
-/// that separates "sign my staking transaction" from "sign away my balance".
+/// Refuses to sign unless the coinstake returns at least that much to this key.
+/// Checking only that *something* comes back is not enough: the gap between the
+/// real input value and the outputs is paid away as fee, so a proposer that
+/// under-reports the coin's value would have the remainder burned. That is loss
+/// of principal, which this signer must make impossible.
 pub fn sign_coinstake(
     key: &StakingKey,
     unsigned: &Transaction,
     script_code: &[u8],
+    staked_value_sats: i64,
 ) -> Result<Transaction, String> {
     if !unsigned.is_coinstake() {
         return Err("not a coinstake (first output must be the empty marker)".into());
     }
-    // Guard: the money must come back to us.
-    coinstake_pays_to(unsigned, &key.p2pkh_script())?;
+    // Guard: at least the full staked value must come back to us.
+    coinstake_returns_at_least(unsigned, &key.p2pkh_script(), staked_value_sats)?;
 
     let sighash = sighash::coinstake_sighash(unsigned, script_code)?;
     let secp = Secp256k1::signing_only();
@@ -163,7 +169,7 @@ mod tests {
         let k = key();
         let unsigned = coinstake_paying(k.p2pkh_script());
         let script_code = k.p2pkh_script();
-        let signed = sign_coinstake(&k, &unsigned, &script_code).unwrap();
+        let signed = sign_coinstake(&k, &unsigned, &script_code, 1_000).unwrap();
 
         // Pull the signature and pubkey back out of the scriptSig and verify.
         let script_sig = &signed.vin[0].script_sig;
@@ -192,8 +198,35 @@ mod tests {
         let k = key();
         let attacker_script = p2pkh_script(&[0xbb; 20]);
         let hostile = coinstake_paying(attacker_script);
-        let err = sign_coinstake(&k, &hostile, &k.p2pkh_script()).unwrap_err();
+        let err = sign_coinstake(&k, &hostile, &k.p2pkh_script(), 1_000).unwrap_err();
         assert!(err.contains("pays nothing back"), "got: {err}");
+    }
+
+    #[test]
+    fn refuses_a_coinstake_that_would_burn_the_stake_as_fee() {
+        // THE attack: a relay under-reports the coin's value, so the coinstake
+        // spends a 10,000 DIVI output but pays back only 100 -- the rest is
+        // burned as fee. Signing must be refused when the returned value is
+        // below what we independently know the coin is worth.
+        let k = key();
+        let real_value = 10_000 * lovenode_core::COIN;
+        let under_paying = build_coinstake(
+            OutPoint { hash: [0x11; 32], n: 0 },
+            vec![TxOut { value: 100 * lovenode_core::COIN, script_pubkey: k.p2pkh_script() }],
+        )
+        .unwrap();
+
+        let err = sign_coinstake(&k, &under_paying, &k.p2pkh_script(), real_value).unwrap_err();
+        assert!(err.contains("burned as fee"), "got: {err}");
+
+        // and the honest case still signs
+        let honest = build_coinstake(
+            OutPoint { hash: [0x11; 32], n: 0 },
+            vec![TxOut { value: real_value + 498 * lovenode_core::COIN,
+                         script_pubkey: k.p2pkh_script() }],
+        )
+        .unwrap();
+        assert!(sign_coinstake(&k, &honest, &k.p2pkh_script(), real_value).is_ok());
     }
 
     #[test]
@@ -201,7 +234,7 @@ mod tests {
         let k = key();
         let mut tx = coinstake_paying(k.p2pkh_script());
         tx.vout.remove(0); // drop the empty marker
-        assert!(sign_coinstake(&k, &tx, &k.p2pkh_script()).is_err());
+        assert!(sign_coinstake(&k, &tx, &k.p2pkh_script(), 1_000).is_err());
     }
 
     #[test]
