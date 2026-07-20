@@ -142,6 +142,50 @@ pub fn eligible_coins(
     Ok(out)
 }
 
+/// Like [`eligible_coins`] but tags each coin with the address that owns it, so
+/// the relay can route each coin only to the device that registered that
+/// address — rather than telling every device about every coin (which both
+/// wastes round trips and leaks one user's coins to another).
+pub fn eligible_coins_by_address(
+    rpc: &NodeRpc,
+    addresses: &[String],
+    now: u32,
+    min_confirmations: u64,
+    min_age_secs: u32,
+) -> Result<Vec<(String, StakeCandidate)>, String> {
+    let unspent = rpc.call("listunspent", json!([min_confirmations, 9_999_999, addresses]))?;
+    let arr = unspent.as_array().ok_or("listunspent: expected an array")?;
+
+    let mut out = Vec::new();
+    for u in arr {
+        let (Some(txid), Some(vout), Some(amount), Some(address)) = (
+            u.get("txid").and_then(|x| x.as_str()),
+            u.get("vout").and_then(|x| x.as_u64()),
+            u.get("amount").and_then(|x| x.as_f64()),
+            u.get("address").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        let start_time = match coin_start_time(rpc, txid) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if now.saturating_sub(start_time) < min_age_secs {
+            continue;
+        }
+        out.push((
+            address.to_string(),
+            StakeCandidate {
+                prevout_hash: hash_from_display_hex(txid)?,
+                prevout_n: vout as u32,
+                value_sats: (amount * lovenode_core::COIN as f64).round() as i64,
+                coinstake_start_time: start_time,
+            },
+        ));
+    }
+    Ok(out)
+}
+
 /// Block time of the block that first confirmed a transaction.
 fn coin_start_time(rpc: &NodeRpc, txid: &str) -> Result<u32, String> {
     let tx = rpc.call("getrawtransaction", json!([txid, 1]))?;

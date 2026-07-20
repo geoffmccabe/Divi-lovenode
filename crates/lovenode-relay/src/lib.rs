@@ -10,5 +10,6 @@ pub mod engine;
 pub mod protocol;
 pub mod rpc;
 pub mod registry;
+pub mod server;
 pub mod session;
 pub mod wire;
