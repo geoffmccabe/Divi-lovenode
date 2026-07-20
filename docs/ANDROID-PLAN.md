@@ -80,6 +80,39 @@ submission is rejected cleanly instead of wasting a win.
 **Goal:** a service that finds wins for registered devices and turns their
 signatures into published blocks.
 
+### Two deployments, one library
+
+`lovenode-relay` is a library with a thin binary wrapper, so the same code runs
+in both places without a rewrite:
+
+| Deployment | Who it serves | Trade-off |
+|---|---|---|
+| **Hosted** — on the Fasthosts node that runs the scanner | phone-only users, the original point of LoveNode | you host it; the relay sees which addresses each user stakes (never keys) |
+| **Embedded in DD69** — a user's own desktop wallet relays for their own phone | anyone already running a desktop node | strictly more private and more trustless: addresses never leave their machine |
+
+The embedded tier is the *better* option for those who can use it; the hosted one
+is the accessible fallback. The phone therefore needs a **relay setting** —
+default to the hosted one, with the option to point at your own desktop.
+
+**Network reality for the embedded tier:** a phone reaches a desktop easily on
+the same home network, but not from mobile data without port forwarding or a
+tunnel. That sounds limiting and mostly isn't — the real use case is a phone
+charging on the nightstand while the desktop is in the same house overnight,
+which works out of the box. Remote access is an optional extra, not a
+prerequisite.
+
+### Reading user coins
+The scanner node needs `addressindex=1` for the explorer anyway, and that same
+index is what lets the relay watch arbitrary user addresses via
+`getaddressutxos` — **no wallet access, no watch-only imports, no keys**. Do that
+reindex once and it serves both projects; deploy the patched binary
+(`getstakinginfo`, `getstaketemplate`) in the same outage rather than a second one.
+
+**Load caution:** that node has already suffered `divid` rpcthreads starvation
+with only the explorer on it. The relay is light — roughly one call per minute
+plus a UTXO lookup per user per block — but it must cache aggressively, back off
+on errors, and never hammer a struggling node.
+
 - Registration: **addresses only** — reject anything resembling key material.
 - Per-block loop: fetch tip → load eligible coins (20 confirmations, 1 hour old)
   → sweep the search window.
