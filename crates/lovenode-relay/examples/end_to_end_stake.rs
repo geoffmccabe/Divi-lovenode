@@ -81,7 +81,7 @@ fn main() {
     println!("signing key loaded (stays in this process, as on a phone)");
 
     // ---- ask the node for the template ---------------------------------------
-    let tmpl = rpc.call("getstaketemplate", json!([txid, vout, addr])).expect("template");
+    let tmpl = rpc.call("getstaketemplate", json!([txid, vout])).expect("template");
     let height = tmpl["height"].as_i64().unwrap();
     let bits = tmpl["bits"].as_u64().unwrap() as u32;
     let prev = hash_from_display_hex(tmpl["prev_block_hash"].as_str().unwrap()).unwrap();
