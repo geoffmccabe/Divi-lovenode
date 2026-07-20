@@ -1,0 +1,12 @@
+[package]
+name = "lovenode-phone"
+description = "The on-device staker: verifies a relay's win, builds and signs a block itself. The security core of the phone app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lovenode-core = { path = "../lovenode-core" }
+lovenode-sign = { path = "../lovenode-sign" }
+lovenode-relay = { path = "../lovenode-relay" }
