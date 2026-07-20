@@ -139,6 +139,39 @@ pub struct DiminishingPolicy {
 }
 
 impl DiminishingPolicy {
+    /// The Divi Card Game schedule: **25% at launch, halving every month, with a
+    /// floor of 1 in 64**.
+    ///
+    /// The numbers land exactly, because 25% is 1/4 and four halvings is 1/64 —
+    /// the floor is reached at month 4 with no remainder:
+    ///
+    /// | Month | Chance |
+    /// |-------|--------|
+    /// | 0     | 25%     (1 in 4)  |
+    /// | 1     | 12.5%   (1 in 8)  |
+    /// | 2     | 6.25%   (1 in 16) |
+    /// | 3     | 3.125%  (1 in 32) |
+    /// | 4+    | 1.5625% (1 in 64) — floor, holds indefinitely |
+    ///
+    /// This is a chance **per stake win**, not per day, so issuance scales with
+    /// how much staking actually happens through LoveNode. Early adopters get the
+    /// good odds precisely when there are fewest of them.
+    ///
+    /// `program_start_time` in [`AwardState`] is month 0.
+    pub fn divi_card_game(series: impl Into<String>) -> Self {
+        Self {
+            initial_chance_ppm: 250_000, // 25%
+            half_life_days: 30.0,        // halves monthly
+            floor_chance_ppm: 15_625,    // 1 in 64
+            max_total_awards: None,      // uncapped — see the note in README
+            min_stake_sats: 0,           // any staker is eligible
+            series: series.into(),
+            // Publicly verifiable by default: anyone can recompute a roll from the
+            // block hash and confirm an award was legitimate.
+            roll_source: RollSource::BlockHash,
+        }
+    }
+
     /// The chance, in ppm, that applies at a given moment.
     pub fn chance_ppm_at(&self, now: u32, state: &AwardState) -> u64 {
         let elapsed = now.saturating_sub(state.program_start_time) as f64 / SECS_PER_DAY;
@@ -244,6 +277,47 @@ mod tests {
     const T0: u32 = 1_800_000_000;
     fn state() -> AwardState {
         AwardState { program_start_time: T0, total_awarded: 0 }
+    }
+
+    #[test]
+    fn divi_card_game_schedule_is_exactly_25_percent_halving_to_1_in_64() {
+        let p = DiminishingPolicy::divi_card_game("genesis");
+        let s = state();
+        let month = |n: f64| T0 + (n * 30.0 * SECS_PER_DAY) as u32;
+
+        // 1/4 -> 1/8 -> 1/16 -> 1/32 -> 1/64, then held forever.
+        assert_eq!(p.chance_ppm_at(month(0.0), &s), 250_000, "25% at launch");
+        assert_eq!(p.chance_ppm_at(month(1.0), &s), 125_000, "12.5% at month 1");
+        assert_eq!(p.chance_ppm_at(month(2.0), &s), 62_500, "6.25% at month 2");
+        assert_eq!(p.chance_ppm_at(month(3.0), &s), 31_250, "3.125% at month 3");
+        assert_eq!(p.chance_ppm_at(month(4.0), &s), 15_625, "1 in 64 at month 4");
+
+        // the floor holds indefinitely -- it never decays past 1 in 64
+        for m in [5.0, 12.0, 60.0, 240.0] {
+            assert_eq!(p.chance_ppm_at(month(m), &s), 15_625, "floor holds at month {m}");
+        }
+    }
+
+    #[test]
+    fn the_floor_really_is_one_in_sixty_four() {
+        // Guard the arithmetic itself: 15_625 ppm must be exactly 1/64.
+        let p = DiminishingPolicy::divi_card_game("genesis");
+        assert_eq!(p.floor_chance_ppm * 64, PPM);
+        // and the launch chance is exactly 1 in 4
+        assert_eq!(p.initial_chance_ppm * 4, PPM);
+    }
+
+    #[test]
+    fn card_game_awards_actually_land_at_roughly_the_stated_rate() {
+        // Sanity-check the odds are real, not just a number in a field: sample
+        // many distinct wins at launch and confirm ~25% are awarded.
+        let p = DiminishingPolicy::divi_card_game("genesis");
+        let s = state();
+        let hits = (0u8..=255)
+            .filter(|seed| p.evaluate(&win_at(1, T0, *seed), &s).is_some())
+            .count();
+        let pct = hits as f64 / 256.0;
+        assert!((0.15..0.35).contains(&pct), "expected ~25%, got {:.1}%", pct * 100.0);
     }
 
     #[test]
