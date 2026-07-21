@@ -13,3 +13,6 @@ lovenode-relay = { path = "../lovenode-relay" }
 tokio = { version = "1", features = ["rt", "net", "time", "macros", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+[dev-dependencies]
+serde_json = "1"
