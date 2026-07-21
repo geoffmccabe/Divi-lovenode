@@ -1,5 +1,7 @@
 # Divi LoveNode
 
+> **Launching the app? Start with [START-HERE.md](START-HERE.md).**
+
 **Stake DIVI from a phone. No blockchain download, no melted battery, no app-store trouble.**
 
 LoveNode lets someone whose only computer is a phone stake their DIVI overnight, earn
