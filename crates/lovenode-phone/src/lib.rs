@@ -33,6 +33,50 @@ use lovenode_relay::protocol::{SignedStake, WinNotice};
 use lovenode_relay::session::StakeSigner;
 use lovenode_sign::{sign_block, sign_coinstake, StakingKey};
 
+pub mod client;
+
+#[cfg(test)]
+pub(crate) mod tests_support {
+    //! Shared fixtures for the crate's tests.
+    use super::*;
+    use lovenode_core::tx::{build_coinstake, OutPoint, TxOut};
+    use lovenode_core::{serialize::hash_from_display_hex, COIN};
+
+    struct HonestTemplates {
+        coinstake: Transaction,
+        height: u64,
+        prev: String,
+        bits: u32,
+    }
+    impl TemplateSource for HonestTemplates {
+        fn stake_template(&self, _txid: &str, _vout: u32) -> Result<StakeTemplate, String> {
+            Ok(StakeTemplate {
+                coinstake_hex: lovenode_core::serialize::to_hex(&self.coinstake.serialize()),
+                height: self.height,
+                prev_block_hash: self.prev.clone(),
+                bits: self.bits,
+                tip_time: 1_700_000_000,
+            })
+        }
+    }
+
+    /// A staker set up to sign one honest win, plus its addresses and token.
+    pub fn honest_staker() -> (PhoneStaker<impl TemplateSource>, Vec<String>, String) {
+        let k = StakingKey::from_bytes(&[0x42; 32], true).unwrap();
+        let txid = "cc".repeat(32);
+        let real_value = 10_000 * COIN;
+        let coinstake = build_coinstake(
+            OutPoint { hash: hash_from_display_hex(&txid).unwrap(), n: 0 },
+            vec![TxOut { value: real_value + 498 * COIN, script_pubkey: k.p2pkh_script() }],
+        )
+        .unwrap();
+        let templates = HonestTemplates { coinstake, height: 1_001, prev: "aa".repeat(32), bits: 0x2100_ffff };
+        let coins = vec![OwnedCoin { txid, vout: 0, value_sats: real_value }];
+        let staker = PhoneStaker::new(k, "dev-1", coins, templates);
+        (staker, vec!["DTaddZU8Xy1234567890abcdefghij".into()], "dev-1".into())
+    }
+}
+
 /// What the device knows about one of its own coins, independent of any relay.
 /// The `value_sats` here is the ground truth the payback guard checks against.
 #[derive(Clone, Debug)]

@@ -183,7 +183,7 @@ pub async fn serve(
             .map_err(|e| format!("accept failed: {e}"))?;
         let st = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, st).await {
+            if let Err(e) = handle_one(stream, st).await {
                 eprintln!("relay: connection {peer} ended: {e}");
             }
         });
@@ -191,7 +191,9 @@ pub async fn serve(
 }
 
 /// One phone's connection.
-async fn handle_connection(stream: TcpStream, state: RelayState) -> Result<(), String> {
+/// Handle one accepted connection. Public so a caller that already owns a
+/// bound listener (e.g. a test, or a custom accept loop) can reuse it.
+pub async fn handle_one(stream: TcpStream, state: RelayState) -> Result<(), String> {
     let ws = tokio_tungstenite::accept_async(stream)
         .await
         .map_err(|e| format!("websocket handshake failed: {e}"))?;
@@ -292,7 +294,7 @@ mod tests {
         let st = state.clone();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let _ = handle_connection(stream, st).await;
+            let _ = handle_one(stream, st).await;
         });
 
         let (mut ws, _) =
@@ -321,7 +323,7 @@ mod tests {
         let st = state.clone();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let _ = handle_connection(stream, st).await;
+            let _ = handle_one(stream, st).await;
         });
 
         let (mut ws, _) =
@@ -407,7 +409,7 @@ mod tests {
         let st = state.clone();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let _ = handle_connection(stream, st).await;
+            let _ = handle_one(stream, st).await;
         });
         let (mut ws, _) =
             tokio_tungstenite::connect_async(format!("ws://{addr}")).await.unwrap();

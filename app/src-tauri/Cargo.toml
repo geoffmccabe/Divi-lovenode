@@ -1,0 +1,26 @@
+[package]
+name = "lovenode-app"
+description = "LoveNode — stake DIVI from your phone. The Tauri shell around the tested Rust staking core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Tauri mobile builds the Rust as a library linked into the Android/iOS host.
+[lib]
+name = "lovenode_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+
+lovenode-core = { path = "../../crates/lovenode-core" }
+lovenode-sign = { path = "../../crates/lovenode-sign" }
+lovenode-phone = { path = "../../crates/lovenode-phone" }
+lovenode-keystore = { path = "../../crates/lovenode-keystore" }

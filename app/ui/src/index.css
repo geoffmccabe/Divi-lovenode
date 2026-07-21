@@ -1,0 +1,39 @@
+/* LoveNode — dark, phone-first, matches the Divi family. */
+:root {
+  --bg: #0e0b16; --card: #1a1526; --fg: #ece8f5; --muted: #9a90b4;
+  --primary: #7c4dff; --on: #4caf82; --off: #6b6280; --err: #ff6b6b;
+  --border: #2a2338;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, system-ui, sans-serif; }
+.screen { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px;
+  display: flex; flex-direction: column; gap: 16px; }
+.header h1 { margin: 0; font-size: 1.6rem; }
+.tagline { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+.card { background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; padding: 16px; }
+.status-card { display: flex; align-items: center; gap: 12px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.dot.on { background: var(--on); box-shadow: 0 0 12px var(--on); }
+.dot.off { background: var(--off); }
+.headline { margin: 0; font-size: 0.98rem; }
+.stats { display: flex; gap: 12px; }
+.stat { flex: 1; background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; padding: 16px; text-align: center; }
+.stat-value { font-size: 1.8rem; font-weight: 600; }
+.stat-label { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+.primary { background: var(--primary); color: #fff; border: none;
+  border-radius: 12px; padding: 16px; font-size: 1.05rem; font-weight: 600;
+  cursor: pointer; }
+.primary:disabled { opacity: 0.5; }
+.note { color: var(--muted); font-size: 0.9rem; line-height: 1.5; margin: 0; }
+.err { color: var(--err); font-size: 0.85rem; }
+h2 { font-size: 0.95rem; margin: 0 0 10px; }
+.activity { list-style: none; margin: 0; padding: 0; }
+.act { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+.act-declined { color: var(--muted); }
+.act-error { color: var(--err); }
+.disclosures ul { margin: 0; padding-left: 18px; color: var(--muted);
+  font-size: 0.82rem; line-height: 1.55; }
+.disclosures li { margin-bottom: 8px; }
