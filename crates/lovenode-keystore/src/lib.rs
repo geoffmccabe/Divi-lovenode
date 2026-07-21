@@ -26,7 +26,40 @@
 //! improvement is to push the actual ECDSA into the secure element; the trait is
 //! shaped to allow that later without changing callers.
 
+use lovenode_sign::wallet::{address_for_key, create_wallet, from_wif, Network};
 use lovenode_sign::StakingKey;
+
+/// Create a brand-new wallet in a keystore: generate a key, store it, and cache
+/// its address. Returns the receiving address to show the user. Refuses if a key
+/// already exists, so a wallet is never silently overwritten.
+pub fn setup_new_wallet(ks: &dyn KeyStore, network: Network) -> Result<String, String> {
+    if ks.has_key() {
+        return Err("a wallet already exists on this device".into());
+    }
+    let (secret, key, address) = create_wallet(network)?;
+    ks.store(&secret, true)?;
+    ks.set_addresses(vec![address.clone()]);
+    // The key is derivable from what we stored; drop the local copies.
+    drop(key);
+    Ok(address)
+}
+
+/// Import an existing wallet from a WIF key. Returns the receiving address.
+pub fn import_wallet(ks: &dyn KeyStore, wif: &str) -> Result<String, String> {
+    if ks.has_key() {
+        return Err("a wallet already exists on this device".into());
+    }
+    let (key, network) = from_wif(wif)?;
+    let address = address_for_key(&key, network);
+    // We need the raw secret to store; re-derive it from the WIF payload.
+    let (_, payload) = lovenode_sign::wallet::base58check_decode(wif.trim())?;
+    let mut secret = [0u8; 32];
+    secret.copy_from_slice(&payload[..32]);
+    let compressed = payload.len() == 33;
+    ks.store(&secret, compressed)?;
+    ks.set_addresses(vec![address.clone()]);
+    Ok(address)
+}
 
 /// A place a staking key is stored. Implementations back onto platform secure
 /// storage; this crate provides only a development stand-in.
@@ -45,6 +78,10 @@ pub trait KeyStore {
     /// The public address string(s) this key controls, if the store caches them
     /// so the UI can show them without unlocking. `None` means "unlock to see".
     fn public_addresses(&self) -> Option<Vec<String>>;
+
+    /// Cache the public addresses for the stored key (public data; safe to hold
+    /// outside the secure element so the UI can show them without unlocking).
+    fn set_addresses(&self, addresses: Vec<String>);
 
     /// Permanently remove the key. Irreversible; the UI must double-confirm.
     fn wipe(&self) -> Result<(), String>;
@@ -73,14 +110,6 @@ impl DevKeyStore {
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// Attach the public addresses for the stored key (the shell computes these
-    /// from the node when the wallet is set up).
-    pub fn set_addresses(&self, addresses: Vec<String>) {
-        if let Some(s) = self.inner.lock().expect("keystore lock").as_mut() {
-            s.addresses = addresses;
-        }
-    }
 }
 
 impl KeyStore for DevKeyStore {
@@ -108,6 +137,12 @@ impl KeyStore for DevKeyStore {
             .expect("keystore lock")
             .as_ref()
             .map(|s| s.addresses.clone())
+    }
+
+    fn set_addresses(&self, addresses: Vec<String>) {
+        if let Some(s) = self.inner.lock().expect("keystore lock").as_mut() {
+            s.addresses = addresses;
+        }
     }
 
     fn wipe(&self) -> Result<(), String> {
@@ -153,5 +188,45 @@ mod tests {
         let ks = DevKeyStore::new();
         let err = ks.load().unwrap_err();
         assert!(err.contains("no staking key"), "got: {err}");
+    }
+
+    #[test]
+    fn setup_new_wallet_creates_a_usable_wallet_and_shows_its_address() {
+        let ks = DevKeyStore::new();
+        let addr = setup_new_wallet(&ks, Network::Main).unwrap();
+        assert!(addr.starts_with('D'), "mainnet receiving address, got {addr}");
+        assert!(ks.has_key());
+        assert_eq!(ks.public_addresses().unwrap(), vec![addr.clone()]);
+        // the stored key actually controls that address
+        let key = ks.load().unwrap();
+        assert_eq!(address_for_key(&key, Network::Main), addr);
+    }
+
+    #[test]
+    fn setup_refuses_to_overwrite_an_existing_wallet() {
+        let ks = DevKeyStore::new();
+        setup_new_wallet(&ks, Network::Main).unwrap();
+        assert!(setup_new_wallet(&ks, Network::Main).is_err(), "must not clobber a wallet");
+    }
+
+    #[test]
+    fn import_wallet_recovers_the_right_address() {
+        // create one wallet, export its WIF, import into a fresh keystore, and
+        // confirm both keystores control the same address.
+        let secret = [0x33u8; 32];
+        let wif = lovenode_sign::wallet::to_wif(&secret, true, Network::Main);
+        let ks = DevKeyStore::new();
+        let addr = import_wallet(&ks, &wif).unwrap();
+        let (_, direct_addr) =
+            lovenode_sign::wallet::key_and_address(&secret, Network::Main).unwrap();
+        assert_eq!(addr, direct_addr);
+        assert!(ks.has_key());
+    }
+
+    #[test]
+    fn import_rejects_a_bad_wif() {
+        let ks = DevKeyStore::new();
+        assert!(import_wallet(&ks, "not-a-wif").is_err());
+        assert!(!ks.has_key());
     }
 }

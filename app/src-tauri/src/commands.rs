@@ -38,6 +38,26 @@ pub fn has_wallet(app: State<'_, App>) -> bool {
     app.keystore.has_key()
 }
 
+/// Create a brand-new staking wallet on this device. Returns the receiving
+/// address to show the user so they can fund it. Refuses if a wallet exists.
+#[tauri::command]
+pub fn create_wallet(app: State<'_, App>) -> Result<String, String> {
+    // Mainnet by default; a dev/test build overrides the network at setup.
+    lovenode_keystore::setup_new_wallet(app.keystore.as_ref(), lovenode_sign::wallet::Network::Main)
+}
+
+/// Import an existing wallet from a WIF private key. Returns its address.
+#[tauri::command]
+pub fn import_wallet(app: State<'_, App>, wif: String) -> Result<String, String> {
+    lovenode_keystore::import_wallet(app.keystore.as_ref(), wif.trim())
+}
+
+/// The receiving address(es) for the current wallet, for display / QR.
+#[tauri::command]
+pub fn addresses(app: State<'_, App>) -> Vec<String> {
+    app.keystore.public_addresses().unwrap_or_default()
+}
+
 /// Point the client at a relay. Accepts the hosted relay or a user's own desktop
 /// (DD69). Rejects anything that isn't a websocket URL so a typo can't silently
 /// send traffic somewhere unexpected.

@@ -23,6 +23,7 @@
 
 pub mod script;
 pub mod sighash;
+pub mod wallet;
 
 use lovenode_core::block::BlockHeader;
 use lovenode_core::tx::{coinstake_returns_at_least, Transaction};
