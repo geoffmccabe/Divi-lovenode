@@ -16,6 +16,7 @@ use crate::script::{hash160, pubkey_from_secret};
 use crate::StakingKey;
 use lovenode_core::serialize::dsha256;
 use secp256k1::SecretKey;
+use zeroize::Zeroize;
 
 /// Which Divi network an address/WIF belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,9 +150,12 @@ pub fn from_wif(wif: &str) -> Result<(StakingKey, Network), String> {
     };
     let mut k = [0u8; 32];
     k.copy_from_slice(secret);
-    // Zero the intermediate copy of the secret we no longer need.
-    let key = StakingKey::from_bytes(&k, compressed)?;
-    Ok((key, network))
+    let key = StakingKey::from_bytes(&k, compressed);
+    // Zero every intermediate copy of the secret before returning.
+    k.zeroize();
+    let mut payload = payload;
+    payload.zeroize();
+    Ok((key?, network))
 }
 
 /// Generate a fresh staking secret from the operating system's CSPRNG.

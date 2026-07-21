@@ -223,17 +223,31 @@ pub async fn handle_one(stream: TcpStream, state: RelayState) -> Result<(), Stri
                 };
                 match ClientMsg::from_json(&text) {
                     Ok(ClientMsg::Register(reg)) => {
+                        // One connection registers ONE token. A second Register on
+                        // the same socket is refused, so a single socket cannot leak
+                        // unbounded registry/outbound entries (cleanup only knows the
+                        // token it stored). Reconnect with a fresh socket to change.
+                        if device_token.is_some() {
+                            let _ = sink.send(Message::Text(ServerMsg::Error{
+                                detail: "already registered on this connection".into()
+                            }.to_json())).await;
+                            continue;
+                        }
                         if let Err(e) = validate_registration(&reg) {
                             let _ = sink.send(Message::Text(ServerMsg::Error{detail:e}.to_json())).await;
                             continue;
                         }
                         let token = reg.device_token.clone();
-                        // register + wire up the outbound channel
+                        // Take BOTH locks together so registration is atomic and can
+                        // never drift (F4): registry and outbound always agree on who
+                        // the current connection for a token is.
                         let eligible = {
                             let mut reg_lock = state.registry.lock().await;
-                            reg_lock.register(reg).map(|d| d.coins.len()).unwrap_or(0)
+                            let mut out_lock = state.outbound.lock().await;
+                            let n = reg_lock.register(reg).map(|d| d.coins.len()).unwrap_or(0);
+                            out_lock.insert(token.clone(), (conn_id, tx.clone()));
+                            n
                         };
-                        state.outbound.lock().await.insert(token.clone(), (conn_id, tx.clone()));
                         device_token = Some(token);
                         let _ = sink.send(Message::Text(
                             ServerMsg::Registered{eligible_coins: eligible}.to_json())).await;

@@ -7,4 +7,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+zeroize = "1"
 lovenode-sign = { path = "../lovenode-sign" }

@@ -79,7 +79,13 @@ where
                     Message::Ping(_) | Message::Pong(_) => continue,
                     _ => continue,
                 };
-                match ServerMsg::from_json(&text)? {
+                // The relay is untrusted: a garbage frame must not stop staking.
+                // Log-and-continue, exactly as the relay does for bad client input.
+                let msg = match ServerMsg::from_json(&text) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                match msg {
                     ServerMsg::Registered { eligible_coins } => {
                         on_event(ClientEvent::Registered { eligible_coins });
                     }

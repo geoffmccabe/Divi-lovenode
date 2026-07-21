@@ -49,6 +49,15 @@ on Android with the hardware-backed version:
 - **Until this is done, keep the app off mainnet.** A dev keystore holding a
   real key is not acceptable. There's a spot to gate this.
 
+### Key-unlock timing (important, easy to get wrong)
+The Android Keystore backend requires device unlock / biometric to decrypt the
+staking secret. Do NOT decrypt per-signature — the phone is locked overnight and
+it would fail. Decrypt ONCE when the user taps "Start staking" (present, can
+authenticate), hand the secret to the Rust staking session, and hold it in the
+foreground-service process for the run. Fully killing the process means the user
+re-authenticates next open. This is the normal hot-staking trade-off and it's
+explained at `load()` in SecureKeyStore.kt.
+
 ### 3. Launch the client task + foreground service
 - In the Tauri mobile entry point, after the key is available, spawn the client:
   ```rust

@@ -28,6 +28,7 @@
 
 use lovenode_sign::wallet::{address_for_key, create_wallet, from_wif, Network};
 use lovenode_sign::StakingKey;
+use zeroize::Zeroize;
 
 /// Create a brand-new wallet in a keystore: generate a key, store it, and cache
 /// its address. Returns the receiving address to show the user. Refuses if a key
@@ -36,11 +37,12 @@ pub fn setup_new_wallet(ks: &dyn KeyStore, network: Network) -> Result<String, S
     if ks.has_key() {
         return Err("a wallet already exists on this device".into());
     }
-    let (secret, key, address) = create_wallet(network)?;
-    ks.store(&secret, true)?;
-    ks.set_addresses(vec![address.clone()]);
-    // The key is derivable from what we stored; drop the local copies.
+    let (mut secret, key, address) = create_wallet(network)?;
+    let stored = ks.store(&secret, true);
+    secret.zeroize(); // wipe the plaintext once stored
     drop(key);
+    stored?;
+    ks.set_addresses(vec![address.clone()]);
     Ok(address)
 }
 
@@ -52,11 +54,15 @@ pub fn import_wallet(ks: &dyn KeyStore, wif: &str) -> Result<String, String> {
     let (key, network) = from_wif(wif)?;
     let address = address_for_key(&key, network);
     // We need the raw secret to store; re-derive it from the WIF payload.
-    let (_, payload) = lovenode_sign::wallet::base58check_decode(wif.trim())?;
+    let (_, mut payload) = lovenode_sign::wallet::base58check_decode(wif.trim())?;
     let mut secret = [0u8; 32];
     secret.copy_from_slice(&payload[..32]);
     let compressed = payload.len() == 33;
-    ks.store(&secret, compressed)?;
+    let stored = ks.store(&secret, compressed);
+    // Zero the plaintext secret copies once handed to secure storage.
+    secret.zeroize();
+    payload.zeroize();
+    stored?;
     ks.set_addresses(vec![address.clone()]);
     Ok(address)
 }

@@ -11,7 +11,7 @@ lovenode-core = { path = "../lovenode-core" }
 lovenode-sign = { path = "../lovenode-sign" }
 lovenode-relay = { path = "../lovenode-relay" }
 tokio = { version = "1", features = ["rt", "net", "time", "macros", "sync"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 [dev-dependencies]

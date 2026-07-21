@@ -65,11 +65,26 @@ class SecureKeyStore(private val filesDir: File) {
         plain.fill(0)
     }
 
-    /** Decrypt and return {compressed flag, 32 secret bytes}. May trigger unlock. */
+    /**
+     * Decrypt and return {compressed flag, 32 secret bytes}. Triggers device
+     * unlock / biometric (the wrap key requires user auth).
+     *
+     * IMPORTANT design note — overnight staking:
+     * Because auth is required, load() CANNOT run while the phone is locked. So
+     * do NOT call it per-signature. Call it ONCE when the user taps "Start
+     * staking" (they are present and can authenticate), hand the secret to the
+     * Rust staking session, and keep it in the foreground-service process memory
+     * for the run. The key is then available to sign blocks overnight without
+     * further prompts. If the OS fully kills the process, the user re-authenticates
+     * next time they open the app. This is the standard hot-staking trade-off:
+     * at-rest the key is hardware-protected and user-gated; during an active
+     * session it lives in the running process, like any staking wallet.
+     */
     fun load(): Pair<Boolean, ByteArray> {
         require(secretFile.exists()) { "no staking key has been set up yet" }
         val bytes = secretFile.readBytes()
         val ivl = bytes[0].toInt()
+        require(ivl == ivLen && bytes.size > 1 + ivl) { "corrupt key file" }
         val iv = bytes.copyOfRange(1, 1 + ivl)
         val ct = bytes.copyOfRange(1 + ivl, bytes.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -88,11 +103,17 @@ class SecureKeyStore(private val filesDir: File) {
     fun addresses(): List<String> =
         if (addrFile.exists()) addrFile.readLines().filter { it.isNotBlank() } else emptyList()
 
-    /** Permanently delete the key and addresses. */
+    /** Permanently delete the key, addresses, AND the hardware wrap key.
+     *  Destroying the wrap key matters: without it, a ciphertext retained via
+     *  backup or flash remanence cannot be decrypted, so wipe is not reversible
+     *  by restoring an old copy. */
     fun wipe() {
         secretFile.delete()
         addrFile.delete()
-        // the hardware wrap key can stay; without the ciphertext it protects nothing
+        try {
+            val ks = KeyStore.getInstance(androidKeyStore).apply { load(null) }
+            ks.deleteEntry(wrapKeyAlias)
+        } catch (_: Exception) { /* already gone */ }
     }
 
     // ── hardware-backed AES key ─────────────────────────────────────────────
@@ -106,10 +127,19 @@ class SecureKeyStore(private val filesDir: File) {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
-            // Uncomment to require device unlock before the key can decrypt:
-            // .setUserAuthenticationRequired(true)
-            // StrongBox where available (hardware security module):
-            // .setIsStrongBoxBacked(true)
+            // Require the device to be unlocked (and, where the app opts in, a
+            // biometric) before this key can decrypt the staking secret. Without
+            // this, any in-process path or app-data attacker recovers the key
+            // silently -- so it is ON, not commented out.
+            .setUserAuthenticationRequired(true)
+            .setUserAuthenticationParameters(
+                30, // seconds the auth stays valid, so signing a run of blocks
+                    // doesn't prompt on every single one
+                KeyProperties.AUTH_DEVICE_CREDENTIAL or KeyProperties.AUTH_BIOMETRIC
+            )
+            // StrongBox (a dedicated security chip) where the device has one.
+            // Wrap in try/catch at the call site: not all devices provide it.
+            .setIsStrongBoxBacked(true)
             .build()
         gen.init(spec)
         return gen.generateKey()

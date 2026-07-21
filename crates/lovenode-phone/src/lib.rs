@@ -147,6 +147,20 @@ impl<T: TemplateSource> PhoneStaker<T> {
         let tmpl = self.templates.stake_template(&notice.prevout_txid, notice.prevout_n)?;
         let unsigned = Transaction::deserialize(&from_hex(&tmpl.coinstake_hex)?)?;
 
+        // CRITICAL: the coinstake must spend EXACTLY the coin whose value we just
+        // checked. One key controls every coin on the address, so without this a
+        // hostile relay could name a 1-DIVI coin (cheap known_value) but hand a
+        // template that spends a 10,000-DIVI coin, pay 1 back and route the rest
+        // away -- a valid block, and outright theft. Bind the value check to the
+        // input actually being signed.
+        let expected = hash_from_display_hex(&notice.prevout_txid)?;
+        if unsigned.vin.len() != 1
+            || unsigned.vin[0].prevout.hash != expected
+            || unsigned.vin[0].prevout.n != notice.prevout_n
+        {
+            return Err("template spends a different coin than the win names; refusing".into());
+        }
+
         // Sanity: the template must build on the same tip the win is for.
         if tmpl.height != notice.height {
             return Err(format!(
@@ -156,7 +170,8 @@ impl<T: TemplateSource> PhoneStaker<T> {
         }
 
         // 4. Sign the coinstake input, refusing unless at least the value WE know
-        //    comes back to us. `known_value` is our ground truth, never the relay's.
+        //    comes back to us. `known_value` is our ground truth, never the relay's,
+        //    and it is now provably the value of the coin actually being spent.
         let script_code = self.key.p2pkh_script();
         let signed_coinstake = sign_coinstake(&self.key, &unsigned, &script_code, known_value)?;
 
@@ -351,6 +366,36 @@ mod tests {
 
         let err = staker.build_signed_stake(&notice(0x2100_ffff, &txid)).unwrap_err();
         assert!(err.contains("burned as fee"), "got: {err}");
+    }
+
+    #[test]
+    fn refuses_a_template_that_spends_a_different_coin_than_the_win_names() {
+        // THE coin-substitution theft. We own two coins on one key: a small one
+        // (named in the win, cheap known_value) and a big one. A hostile template
+        // names the small coin but its coinstake spends the BIG coin, paying the
+        // big value away. Binding the value check to the actual input refuses it.
+        let k = key();
+        let small_txid = "cc".repeat(32);
+        let big_txid = "dd".repeat(32);
+        let big_value = 10_000 * COIN;
+
+        // template's coinstake spends the BIG coin (not the small one the win names)
+        let coinstake = build_coinstake(
+            OutPoint { hash: hash_from_display_hex(&big_txid).unwrap(), n: 0 },
+            vec![TxOut { value: 10_498 * COIN, script_pubkey: k.p2pkh_script() }],
+        )
+        .unwrap();
+        let templates = FakeTemplates { coinstake, height: 1_001, prev: "aa".repeat(32), bits: 0x2100_ffff };
+        // the phone knows BOTH coins; the small one is worth 1 sat
+        let coins = vec![
+            OwnedCoin { txid: small_txid.clone(), vout: 0, value_sats: 1 },
+            OwnedCoin { txid: big_txid.clone(), vout: 0, value_sats: big_value },
+        ];
+        let staker = PhoneStaker::new(k, "dev-1", coins, templates);
+
+        // the win names the SMALL coin
+        let err = staker.build_signed_stake(&notice(0x2100_ffff, &small_txid)).unwrap_err();
+        assert!(err.contains("different coin"), "got: {err}");
     }
 
     #[test]

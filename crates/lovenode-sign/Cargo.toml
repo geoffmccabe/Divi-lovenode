@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+zeroize = "1"
 lovenode-core = { path = "../lovenode-core" }
 # libsecp256k1 bindings -- the same C library the Divi node itself uses, so
 # signatures are produced by identical code rather than a reimplementation.
