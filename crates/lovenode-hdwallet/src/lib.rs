@@ -35,10 +35,16 @@ pub struct HdWallet {
 }
 
 impl HdWallet {
-    /// Create a brand-new wallet: generate a 24-word phrase and return both the
+    /// Create a brand-new wallet: generate a 12-word phrase and return both the
     /// wallet and the phrase to show the user ONCE for backup.
+    ///
+    /// 12 words (128 bits of entropy) is the chosen default for LoveNode -- easier
+    /// to write down and still far beyond any brute-force reach. Interop is
+    /// unaffected: restoring accepts any valid length, so a 12-word LoveNode phrase
+    /// still restores in the desktop wallet, and a 24-word desktop phrase still
+    /// restores here.
     pub fn generate(network: Network) -> Result<(HdWallet, Mnemonic), String> {
-        let mnemonic = Mnemonic::generate(24)?;
+        let mnemonic = Mnemonic::generate(12)?;
         let wallet = Self::from_mnemonic(&mnemonic, "", network)?;
         Ok((wallet, mnemonic))
     }
@@ -131,6 +137,12 @@ mod tests {
         let a1 = w1.receiving_address(1).unwrap();
         assert!(a0.starts_with('D'));
         assert_ne!(a0, a1);
+    }
+
+    #[test]
+    fn default_generation_is_12_words() {
+        let (_w, phrase) = HdWallet::generate(Network::Main).unwrap();
+        assert_eq!(phrase.phrase().split(' ').count(), 12, "LoveNode phrases are 12 words");
     }
 
     #[test]
