@@ -41,59 +41,54 @@ class SecureKeyStore(private val filesDir: File) {
     private val gcmTagBits = 128
     private val ivLen = 12
 
-    /** True once an encrypted staking secret is stored. */
+    /** True once an encrypted wallet seed is stored. */
     fun hasKey(): Boolean = secretFile.exists()
 
-    /** Encrypt and store 32 secret bytes plus the compressed flag. */
-    fun store(secret: ByteArray, compressed: Boolean) {
-        require(secret.size == 32) { "staking secret must be 32 bytes" }
+    /** Encrypt and store the 64-byte BIP39 wallet seed.
+     *
+     *  NOTE: since the wallet became recovery-phrase based, the secret stored is
+     *  the 64-byte HD seed (the whole key tree is derived from it in Rust), not a
+     *  single 32-byte key. The Rust side hands you exactly these 64 bytes via the
+     *  KeyStore trait's store_seed. */
+    fun store(seed: ByteArray) {
+        require(seed.size == 64) { "wallet seed must be 64 bytes" }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateWrapKey())
         val iv = cipher.iv
-        // prepend the compressed flag byte to the plaintext, so load() recovers it
-        val plain = ByteArray(33)
-        plain[0] = if (compressed) 1 else 0
-        System.arraycopy(secret, 0, plain, 1, 32)
-        val ct = cipher.doFinal(plain)
+        val ct = cipher.doFinal(seed)
         // file layout: [ivLen][iv][ciphertext]
         secretFile.outputStream().use {
             it.write(ivLen)
             it.write(iv)
             it.write(ct)
         }
-        // wipe the transient plaintext copy
-        plain.fill(0)
     }
 
     /**
-     * Decrypt and return {compressed flag, 32 secret bytes}. Triggers device
-     * unlock / biometric (the wrap key requires user auth).
+     * Decrypt and return the 64-byte wallet seed. Triggers device unlock /
+     * biometric (the wrap key requires user auth).
      *
      * IMPORTANT design note — overnight staking:
      * Because auth is required, load() CANNOT run while the phone is locked. So
      * do NOT call it per-signature. Call it ONCE when the user taps "Start
-     * staking" (they are present and can authenticate), hand the secret to the
-     * Rust staking session, and keep it in the foreground-service process memory
-     * for the run. The key is then available to sign blocks overnight without
-     * further prompts. If the OS fully kills the process, the user re-authenticates
-     * next time they open the app. This is the standard hot-staking trade-off:
-     * at-rest the key is hardware-protected and user-gated; during an active
-     * session it lives in the running process, like any staking wallet.
+     * staking" (they are present and can authenticate), hand the seed to the Rust
+     * staking session (which derives keys from it), and keep it in the
+     * foreground-service process memory for the run. Keys are then available to
+     * sign blocks overnight without further prompts. If the OS fully kills the
+     * process, the user re-authenticates next open. This is the standard
+     * hot-staking trade-off: at-rest the seed is hardware-protected and
+     * user-gated; during an active session it lives in the running process.
      */
-    fun load(): Pair<Boolean, ByteArray> {
-        require(secretFile.exists()) { "no staking key has been set up yet" }
+    fun load(): ByteArray {
+        require(secretFile.exists()) { "no wallet has been set up yet" }
         val bytes = secretFile.readBytes()
         val ivl = bytes[0].toInt()
-        require(ivl == ivLen && bytes.size > 1 + ivl) { "corrupt key file" }
+        require(ivl == ivLen && bytes.size > 1 + ivl) { "corrupt seed file" }
         val iv = bytes.copyOfRange(1, 1 + ivl)
         val ct = bytes.copyOfRange(1 + ivl, bytes.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, getWrapKey(), GCMParameterSpec(gcmTagBits, iv))
-        val plain = cipher.doFinal(ct)
-        val compressed = plain[0].toInt() == 1
-        val secret = plain.copyOfRange(1, 33)
-        plain.fill(0)
-        return Pair(compressed, secret)
+        return cipher.doFinal(ct) // the 64-byte seed
     }
 
     fun setAddresses(addresses: List<String>) {

@@ -11,7 +11,7 @@ use tauri::State;
 pub fn status(app: State<'_, App>) -> StakingStatus {
     let mut s = app.status.lock().expect("status lock").clone();
     // Keep the always-derivable fields honest even if nothing has run yet.
-    s.has_wallet = app.keystore.has_key();
+    s.has_wallet = app.keystore.has_wallet();
     s.relay_url = app.relay_url.lock().expect("relay lock").clone();
     if s.headline.is_empty() {
         s.headline = if !s.has_wallet {
@@ -35,21 +35,30 @@ pub fn disclosures() -> Disclosures {
 /// Has a staking key been set up on this device?
 #[tauri::command]
 pub fn has_wallet(app: State<'_, App>) -> bool {
-    app.keystore.has_key()
+    app.keystore.has_wallet()
 }
 
-/// Create a brand-new staking wallet on this device. Returns the receiving
-/// address to show the user so they can fund it. Refuses if a wallet exists.
+/// Create a brand-new wallet on this device. Returns the 12-word recovery phrase
+/// to show the user ONCE for backup. Refuses if a wallet already exists.
 #[tauri::command]
 pub fn create_wallet(app: State<'_, App>) -> Result<String, String> {
     // Mainnet by default; a dev/test build overrides the network at setup.
-    lovenode_keystore::setup_new_wallet(app.keystore.as_ref(), lovenode_sign::wallet::Network::Main)
+    let mnemonic = lovenode_keystore::setup_new_wallet(
+        app.keystore.as_ref(),
+        lovenode_sign::wallet::Network::Main,
+    )?;
+    Ok(mnemonic.phrase().to_string())
 }
 
-/// Import an existing wallet from a WIF private key. Returns its address.
+/// Restore a wallet from a 12-word recovery phrase (optionally with a passphrase).
 #[tauri::command]
-pub fn import_wallet(app: State<'_, App>, wif: String) -> Result<String, String> {
-    lovenode_keystore::import_wallet(app.keystore.as_ref(), wif.trim())
+pub fn restore_wallet(app: State<'_, App>, phrase: String, passphrase: String) -> Result<(), String> {
+    lovenode_keystore::restore_from_phrase(
+        app.keystore.as_ref(),
+        phrase.trim(),
+        passphrase.trim(),
+        lovenode_sign::wallet::Network::Main,
+    )
 }
 
 /// The receiving address(es) for the current wallet, for display / QR.
@@ -84,7 +93,7 @@ pub fn set_relay(app: State<'_, App>, url: String) -> Result<(), String> {
 /// it and reflects status for the UI.
 #[tauri::command]
 pub fn start_staking(app: State<'_, App>) -> Result<(), String> {
-    if !app.keystore.has_key() {
+    if !app.keystore.has_wallet() {
         return Err("set up a staking wallet first".into());
     }
     // Clear any prior stop signal.
@@ -137,7 +146,7 @@ mod tests {
     #[test]
     fn starting_without_a_wallet_is_refused() {
         let a = app();
-        assert!(!a.keystore.has_key());
+        assert!(!a.keystore.has_wallet());
         assert!(start_staking_inner(&a).is_err());
     }
 
@@ -145,7 +154,7 @@ mod tests {
     fn status_headline_is_honest_about_each_state() {
         let a = app();
         assert!(status_inner(&a).headline.contains("Set up"));
-        a.keystore.store(&[0x42; 32], true).unwrap();
+        a.keystore.store_seed(&[0x42; 64]).unwrap();
         let s = status_inner(&a);
         assert!(s.has_wallet);
         assert!(s.headline.contains("Ready"));
@@ -175,14 +184,14 @@ mod tests {
         Ok(())
     }
     fn start_staking_inner(app: &App) -> Result<(), String> {
-        if !app.keystore.has_key() {
+        if !app.keystore.has_wallet() {
             return Err("set up a staking wallet first".into());
         }
         Ok(())
     }
     fn status_inner(app: &App) -> StakingStatus {
         let mut s = app.status.lock().unwrap().clone();
-        s.has_wallet = app.keystore.has_key();
+        s.has_wallet = app.keystore.has_wallet();
         if s.headline.is_empty() {
             s.headline = if !s.has_wallet {
                 "Set up a staking wallet to begin.".into()

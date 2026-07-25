@@ -9,3 +9,4 @@ repository.workspace = true
 [dependencies]
 zeroize = "1"
 lovenode-sign = { path = "../lovenode-sign" }
+lovenode-hdwallet = { path = "../lovenode-hdwallet" }

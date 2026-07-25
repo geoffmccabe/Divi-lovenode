@@ -1,108 +1,120 @@
-//! # lovenode-keystore — where the staking key lives
+//! # lovenode-keystore — where the wallet's seed lives
 //!
-//! The single most sensitive question in the whole app is *where the private key
-//! is kept and who can use it*. This crate makes that one small, explicit
-//! contract ([`KeyStore`]) rather than something smeared through the UI, so the
-//! platform-specific secure storage is the only thing that varies between
-//! desktop, Android and iOS.
+//! The single most sensitive question in the whole app is *where the secret is
+//! kept and who can use it*. Since the wallet became recovery-phrase based
+//! ([`lovenode_hdwallet`]), the secret stored is the **64-byte BIP39 seed** the
+//! whole key tree is derived from — not a single key. This crate makes that one
+//! small, explicit contract ([`KeyStore`]) so the platform-specific secure
+//! storage is the only thing that varies between desktop, Android and iOS.
 //!
 //! ## The contract
 //!
-//! - The key is **generated or imported once** and thereafter **never leaves**
-//!   the secure store in plaintext. On Android that means the private key is
-//!   held by the **Android Keystore**, hardware-backed where available; on iOS,
-//!   the **Keychain / Secure Enclave**. Those backends implement [`KeyStore`]
-//!   with a thin JNI / FFI shim in the app shell — not here.
+//! - The seed is **generated or restored once** (from a 12-word phrase) and
+//!   thereafter **never leaves** the secure store in plaintext. On Android that
+//!   means the Android Keystore encrypts it at rest; on iOS, the Keychain /
+//!   Secure Enclave. Those backends implement [`KeyStore`] with a thin FFI shim
+//!   in the app shell — not here.
 //! - This crate ships only an in-memory [`DevKeyStore`] for development and
-//!   tests. It is **not** secure storage and says so loudly; a real build must
-//!   supply a platform backend.
+//!   tests. It is **not** secure storage and says so loudly.
 //!
-//! ## Why the key still materialises as a `StakingKey`
+//! ## Why the seed materialises in memory
 //!
-//! Divi block signing needs the secp256k1 secret in-process at the instant of
-//! signing (there is no "sign this on the secure element" path for arbitrary
-//! block hashes today). So the honest contract is: the key is *stored* in secure
-//! hardware and *loaded* into memory only to sign, then dropped. A future
-//! improvement is to push the actual ECDSA into the secure element; the trait is
-//! shaped to allow that later without changing callers.
+//! Divi block/transaction signing needs the secp256k1 secret in-process at the
+//! instant of signing. So the honest contract is: the seed is *stored* in secure
+//! hardware and *loaded* into memory (via [`load_wallet`]) to derive the key that
+//! signs, then dropped/zeroized.
 
-use lovenode_sign::wallet::{address_for_key, create_wallet, from_wif, Network};
-use lovenode_sign::StakingKey;
+use lovenode_hdwallet::{HdWallet, Mnemonic};
+use lovenode_sign::wallet::Network;
 use zeroize::Zeroize;
 
-/// Create a brand-new wallet in a keystore: generate a key, store it, and cache
-/// its address. Returns the receiving address to show the user. Refuses if a key
-/// already exists, so a wallet is never silently overwritten.
-pub fn setup_new_wallet(ks: &dyn KeyStore, network: Network) -> Result<String, String> {
-    if ks.has_key() {
+/// How many receiving addresses to derive and cache when a wallet is set up —
+/// the standard BIP44 gap limit. These are what the relay watches and what the
+/// UI shows; they are public and safe to hold outside the secure element.
+pub const GAP_LIMIT: u32 = 20;
+
+/// Create a brand-new wallet: generate a 12-word phrase, store its seed, cache
+/// the receiving addresses, and return the phrase to show the user ONCE for
+/// backup. Refuses if a wallet already exists, so one is never silently
+/// overwritten.
+pub fn setup_new_wallet(ks: &dyn KeyStore, network: Network) -> Result<Mnemonic, String> {
+    if ks.has_wallet() {
         return Err("a wallet already exists on this device".into());
     }
-    let (mut secret, key, address) = create_wallet(network)?;
-    let stored = ks.store(&secret, true);
-    secret.zeroize(); // wipe the plaintext once stored
-    drop(key);
-    stored?;
-    ks.set_addresses(vec![address.clone()]);
-    Ok(address)
+    let (wallet, mnemonic) = HdWallet::generate(network)?;
+    stash(ks, &wallet)?;
+    Ok(mnemonic)
 }
 
-/// Import an existing wallet from a WIF key. Returns the receiving address.
-pub fn import_wallet(ks: &dyn KeyStore, wif: &str) -> Result<String, String> {
-    if ks.has_key() {
+/// Restore a wallet from a recovery phrase (and optional passphrase). Validates
+/// the phrase, stores the seed, and caches the receiving addresses.
+pub fn restore_from_phrase(
+    ks: &dyn KeyStore,
+    phrase: &str,
+    passphrase: &str,
+    network: Network,
+) -> Result<(), String> {
+    if ks.has_wallet() {
         return Err("a wallet already exists on this device".into());
     }
-    let (key, network) = from_wif(wif)?;
-    let address = address_for_key(&key, network);
-    // We need the raw secret to store; re-derive it from the WIF payload.
-    let (_, mut payload) = lovenode_sign::wallet::base58check_decode(wif.trim())?;
-    let mut secret = [0u8; 32];
-    secret.copy_from_slice(&payload[..32]);
-    let compressed = payload.len() == 33;
-    let stored = ks.store(&secret, compressed);
-    // Zero the plaintext secret copies once handed to secure storage.
-    secret.zeroize();
-    payload.zeroize();
-    stored?;
-    ks.set_addresses(vec![address.clone()]);
-    Ok(address)
+    let mnemonic = Mnemonic::parse(phrase)?;
+    let wallet = HdWallet::from_mnemonic(&mnemonic, passphrase, network)?;
+    stash(ks, &wallet)
 }
 
-/// A place a staking key is stored. Implementations back onto platform secure
+/// Store a wallet's seed and cache its addresses, zeroizing the plaintext seed.
+fn stash(ks: &dyn KeyStore, wallet: &HdWallet) -> Result<(), String> {
+    let mut seed = wallet.seed();
+    let stored = ks.store_seed(&seed);
+    seed.zeroize();
+    stored?;
+    ks.set_addresses(wallet.receiving_addresses(GAP_LIMIT)?);
+    Ok(())
+}
+
+/// Load the HD wallet from the stored seed, to derive keys and addresses. The
+/// caller drops it as soon as it is done; the seed is zeroized on drop.
+pub fn load_wallet(ks: &dyn KeyStore, network: Network) -> Result<HdWallet, String> {
+    let mut seed = ks.load_seed()?;
+    let wallet = HdWallet::from_seed(seed, network);
+    seed.zeroize();
+    Ok(wallet)
+}
+
+/// A place a wallet seed is stored. Implementations back onto platform secure
 /// storage; this crate provides only a development stand-in.
 pub trait KeyStore {
-    /// True once a key has been stored.
-    fn has_key(&self) -> bool;
+    /// True once a seed has been stored.
+    fn has_wallet(&self) -> bool;
 
-    /// Store a freshly generated or imported key. Overwrites any existing key,
-    /// so callers must confirm with the user before replacing one.
-    fn store(&self, secret: &[u8; 32], compressed: bool) -> Result<(), String>;
+    /// Store the 64-byte BIP39 seed. Overwrites any existing seed, so callers
+    /// must confirm with the user before replacing one.
+    fn store_seed(&self, seed: &[u8; 64]) -> Result<(), String>;
 
-    /// Load the key for signing. On a real backend this is the point at which
-    /// the OS may require user presence (biometric / device unlock).
-    fn load(&self) -> Result<StakingKey, String>;
+    /// Load the seed. On a real backend this is the point at which the OS may
+    /// require user presence (biometric / device unlock).
+    fn load_seed(&self) -> Result<[u8; 64], String>;
 
-    /// The public address string(s) this key controls, if the store caches them
-    /// so the UI can show them without unlocking. `None` means "unlock to see".
+    /// The cached receiving addresses, if present. `None` means "unlock to see".
     fn public_addresses(&self) -> Option<Vec<String>>;
 
-    /// Cache the public addresses for the stored key (public data; safe to hold
-    /// outside the secure element so the UI can show them without unlocking).
+    /// Cache the public receiving addresses (public data; safe outside the
+    /// secure element so the UI can show them without unlocking).
     fn set_addresses(&self, addresses: Vec<String>);
 
-    /// Permanently remove the key. Irreversible; the UI must double-confirm.
+    /// Permanently remove the seed. Irreversible; the UI must double-confirm.
     fn wipe(&self) -> Result<(), String>;
 }
 
 /// An in-memory keystore for development and tests. **NOT secure storage** — the
-/// key sits in ordinary process memory. A production build must replace this
+/// seed sits in ordinary process memory. A production build must replace this
 /// with a platform backend (Android Keystore / iOS Keychain).
 pub struct DevKeyStore {
     inner: std::sync::Mutex<Option<Stored>>,
 }
 
 struct Stored {
-    secret: [u8; 32],
-    compressed: bool,
+    seed: [u8; 64],
     addresses: Vec<String>,
 }
 
@@ -119,30 +131,24 @@ impl DevKeyStore {
 }
 
 impl KeyStore for DevKeyStore {
-    fn has_key(&self) -> bool {
+    fn has_wallet(&self) -> bool {
         self.inner.lock().expect("keystore lock").is_some()
     }
 
-    fn store(&self, secret: &[u8; 32], compressed: bool) -> Result<(), String> {
-        // Validate the secret is a usable key before storing it.
-        StakingKey::from_bytes(secret, compressed)?;
+    fn store_seed(&self, seed: &[u8; 64]) -> Result<(), String> {
         *self.inner.lock().expect("keystore lock") =
-            Some(Stored { secret: *secret, compressed, addresses: Vec::new() });
+            Some(Stored { seed: *seed, addresses: Vec::new() });
         Ok(())
     }
 
-    fn load(&self) -> Result<StakingKey, String> {
+    fn load_seed(&self) -> Result<[u8; 64], String> {
         let guard = self.inner.lock().expect("keystore lock");
-        let s = guard.as_ref().ok_or("no staking key has been set up yet")?;
-        StakingKey::from_bytes(&s.secret, s.compressed)
+        let s = guard.as_ref().ok_or("no wallet has been set up yet")?;
+        Ok(s.seed)
     }
 
     fn public_addresses(&self) -> Option<Vec<String>> {
-        self.inner
-            .lock()
-            .expect("keystore lock")
-            .as_ref()
-            .map(|s| s.addresses.clone())
+        self.inner.lock().expect("keystore lock").as_ref().map(|s| s.addresses.clone())
     }
 
     fn set_addresses(&self, addresses: Vec<String>) {
@@ -152,7 +158,10 @@ impl KeyStore for DevKeyStore {
     }
 
     fn wipe(&self) -> Result<(), String> {
-        *self.inner.lock().expect("keystore lock") = None;
+        // zeroize the seed before dropping it
+        if let Some(mut s) = self.inner.lock().expect("keystore lock").take() {
+            s.seed.zeroize();
+        }
         Ok(())
     }
 }
@@ -160,79 +169,73 @@ impl KeyStore for DevKeyStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lovenode_sign::wallet::address_for_key;
 
     #[test]
-    fn stores_loads_and_wipes() {
+    fn setup_creates_a_usable_wallet_and_shows_a_12_word_phrase() {
         let ks = DevKeyStore::new();
-        assert!(!ks.has_key());
-
-        ks.store(&[0x42; 32], true).unwrap();
-        assert!(ks.has_key());
-
-        // the loaded key round-trips to a usable signer
-        let key = ks.load().unwrap();
-        assert_eq!(key.public_key().len(), 33, "compressed pubkey");
-
-        ks.set_addresses(vec!["DAddr".into()]);
-        assert_eq!(ks.public_addresses().unwrap(), vec!["DAddr".to_string()]);
-
-        ks.wipe().unwrap();
-        assert!(!ks.has_key());
-        assert!(ks.load().is_err(), "no key after wipe");
-    }
-
-    #[test]
-    fn rejects_an_invalid_secret() {
-        let ks = DevKeyStore::new();
-        // all-zero secret is not a valid secp256k1 key
-        assert!(ks.store(&[0u8; 32], true).is_err());
-        assert!(!ks.has_key(), "nothing stored on a bad key");
-    }
-
-    #[test]
-    fn loading_before_setup_is_a_clear_error_not_a_panic() {
-        let ks = DevKeyStore::new();
-        let err = ks.load().unwrap_err();
-        assert!(err.contains("no staking key"), "got: {err}");
-    }
-
-    #[test]
-    fn setup_new_wallet_creates_a_usable_wallet_and_shows_its_address() {
-        let ks = DevKeyStore::new();
-        let addr = setup_new_wallet(&ks, Network::Main).unwrap();
-        assert!(addr.starts_with('D'), "mainnet receiving address, got {addr}");
-        assert!(ks.has_key());
-        assert_eq!(ks.public_addresses().unwrap(), vec![addr.clone()]);
-        // the stored key actually controls that address
-        let key = ks.load().unwrap();
-        assert_eq!(address_for_key(&key, Network::Main), addr);
+        assert!(!ks.has_wallet());
+        let phrase = setup_new_wallet(&ks, Network::Main).unwrap();
+        assert_eq!(phrase.phrase().split(' ').count(), 12);
+        assert!(ks.has_wallet());
+        // the cached addresses match what the seed derives
+        let addrs = ks.public_addresses().unwrap();
+        assert_eq!(addrs.len(), GAP_LIMIT as usize);
+        assert!(addrs[0].starts_with('D'));
+        let wallet = load_wallet(&ks, Network::Main).unwrap();
+        assert_eq!(wallet.receiving_address(0).unwrap(), addrs[0]);
     }
 
     #[test]
     fn setup_refuses_to_overwrite_an_existing_wallet() {
         let ks = DevKeyStore::new();
         setup_new_wallet(&ks, Network::Main).unwrap();
-        assert!(setup_new_wallet(&ks, Network::Main).is_err(), "must not clobber a wallet");
+        assert!(setup_new_wallet(&ks, Network::Main).is_err());
     }
 
     #[test]
-    fn import_wallet_recovers_the_right_address() {
-        // create one wallet, export its WIF, import into a fresh keystore, and
-        // confirm both keystores control the same address.
-        let secret = [0x33u8; 32];
-        let wif = lovenode_sign::wallet::to_wif(&secret, true, Network::Main);
-        let ks = DevKeyStore::new();
-        let addr = import_wallet(&ks, &wif).unwrap();
-        let (_, direct_addr) =
-            lovenode_sign::wallet::key_and_address(&secret, Network::Main).unwrap();
-        assert_eq!(addr, direct_addr);
-        assert!(ks.has_key());
+    fn restore_from_phrase_recovers_the_same_addresses() {
+        // set up a wallet, take its phrase, restore into a fresh keystore, and
+        // confirm the receiving addresses are identical.
+        let ks1 = DevKeyStore::new();
+        let phrase = setup_new_wallet(&ks1, Network::Main).unwrap();
+        let a1 = ks1.public_addresses().unwrap();
+
+        let ks2 = DevKeyStore::new();
+        restore_from_phrase(&ks2, phrase.phrase(), "", Network::Main).unwrap();
+        let a2 = ks2.public_addresses().unwrap();
+        assert_eq!(a1, a2, "the same phrase must recover the same addresses");
     }
 
     #[test]
-    fn import_rejects_a_bad_wif() {
+    fn restore_rejects_a_bad_phrase() {
         let ks = DevKeyStore::new();
-        assert!(import_wallet(&ks, "not-a-wif").is_err());
-        assert!(!ks.has_key());
+        assert!(restore_from_phrase(&ks, "not a real phrase at all nope", "", Network::Main).is_err());
+        assert!(!ks.has_wallet());
+    }
+
+    #[test]
+    fn load_before_setup_is_a_clear_error() {
+        let ks = DevKeyStore::new();
+        assert!(load_wallet(&ks, Network::Main).is_err());
+    }
+
+    #[test]
+    fn wipe_removes_the_wallet() {
+        let ks = DevKeyStore::new();
+        setup_new_wallet(&ks, Network::Main).unwrap();
+        ks.wipe().unwrap();
+        assert!(!ks.has_wallet());
+        assert!(load_wallet(&ks, Network::Main).is_err());
+    }
+
+    #[test]
+    fn loaded_wallet_signs_for_a_derived_address() {
+        let ks = DevKeyStore::new();
+        setup_new_wallet(&ks, Network::Test).unwrap();
+        let wallet = load_wallet(&ks, Network::Test).unwrap();
+        let key = wallet.receiving_key(0).unwrap();
+        // the derived key controls the first cached address
+        assert_eq!(address_for_key(&key, Network::Test), ks.public_addresses().unwrap()[0]);
     }
 }

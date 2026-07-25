@@ -55,7 +55,7 @@ pub fn run() {
             commands::disclosures,
             commands::has_wallet,
             commands::create_wallet,
-            commands::import_wallet,
+            commands::restore_wallet,
             commands::addresses,
             commands::set_relay,
             commands::start_staking,

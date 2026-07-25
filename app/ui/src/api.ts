@@ -24,8 +24,10 @@ export interface Disclosures {
 export const getStatus = () => invoke<StakingStatus>("status");
 export const getDisclosures = () => invoke<Disclosures>("disclosures");
 export const hasWallet = () => invoke<boolean>("has_wallet");
+// returns the 12-word recovery phrase to show once
 export const createWallet = () => invoke<string>("create_wallet");
-export const importWallet = (wif: string) => invoke<string>("import_wallet", { wif });
+export const restoreWallet = (phrase: string, passphrase = "") =>
+  invoke<void>("restore_wallet", { phrase, passphrase });
 export const addresses = () => invoke<string[]>("addresses");
 export const setRelay = (url: string) => invoke<void>("set_relay", { url });
 export const startStaking = () => invoke<void>("start_staking");
