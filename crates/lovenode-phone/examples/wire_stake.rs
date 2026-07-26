@@ -12,7 +12,7 @@
 //!   DIVI_DATADIR=~/divi-poe-regtest cargo run -p lovenode-phone --example wire_stake
 
 use lovenode_phone::client;
-use lovenode_phone::{OwnedCoin, PhoneStaker, StakeTemplate, TemplateSource};
+use lovenode_phone::{OwnedCoin, PhoneStaker, SingleKey, StakeTemplate, TemplateSource};
 use lovenode_relay::rpc::NodeRpc;
 use lovenode_relay::server::{handle_one, RelayState};
 use lovenode_sign::wallet::from_wif;
@@ -89,11 +89,13 @@ async fn main() {
             txid: u["txid"].as_str().unwrap().to_string(),
             vout: u["vout"].as_u64().unwrap() as u32,
             value_sats: (u["amount"].as_f64().unwrap() * 1e8).round() as i64,
+            change: false,
+            key_index: 0,
         })
         .collect();
     println!("phone knows {} coin(s) on its address", owned.len());
     let staker = PhoneStaker::new(
-        key,
+        SingleKey(key),
         "wire-test".to_string(),
         owned,
         NodeTemplates { rpc: rebuild_rpc(&conf) },

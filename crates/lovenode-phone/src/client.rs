@@ -35,16 +35,17 @@ pub enum ClientEvent {
 /// Run the phone client against `relay_url` until the socket closes or `stop`
 /// fires. `on_event` is called for every [`ClientEvent`] so the shell can update
 /// the UI. Returns Ok on a clean close.
-pub async fn run<T, F>(
+pub async fn run<T, K, F>(
     relay_url: &str,
     addresses: Vec<String>,
     device_token: String,
-    staker: &PhoneStaker<T>,
+    staker: &PhoneStaker<T, K>,
     mut on_event: F,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String>
 where
     T: TemplateSource,
+    K: crate::CoinKeys,
     F: FnMut(ClientEvent),
 {
     let (mut ws, _) = tokio_tungstenite::connect_async(relay_url)

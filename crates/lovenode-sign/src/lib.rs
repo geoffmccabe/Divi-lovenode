@@ -34,6 +34,9 @@ pub use script::{hash160, p2pkh_script, pubkey_from_secret};
 pub use sighash::{coinstake_sighash, signature_hash, SIGHASH_ALL};
 
 /// A staking key. Wraps the secret so it is never printed or serialized.
+/// `Clone` is derived so a key provider can hand out a fresh key per coin;
+/// the redacted `Debug` still guarantees it is never printed.
+#[derive(Clone)]
 pub struct StakingKey {
     secret: SecretKey,
     compressed: bool,

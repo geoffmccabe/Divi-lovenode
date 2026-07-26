@@ -61,7 +61,7 @@ pub(crate) mod tests_support {
     }
 
     /// A staker set up to sign one honest win, plus its addresses and token.
-    pub fn honest_staker() -> (PhoneStaker<impl TemplateSource>, Vec<String>, String) {
+    pub fn honest_staker() -> (PhoneStaker<impl TemplateSource, SingleKey>, Vec<String>, String) {
         let k = StakingKey::from_bytes(&[0x42; 32], true).unwrap();
         let txid = "cc".repeat(32);
         let real_value = 10_000 * COIN;
@@ -71,8 +71,8 @@ pub(crate) mod tests_support {
         )
         .unwrap();
         let templates = HonestTemplates { coinstake, height: 1_001, prev: "aa".repeat(32), bits: 0x2100_ffff };
-        let coins = vec![OwnedCoin { txid, vout: 0, value_sats: real_value }];
-        let staker = PhoneStaker::new(k, "dev-1", coins, templates);
+        let coins = vec![OwnedCoin { txid, vout: 0, value_sats: real_value, change: false, key_index: 0 }];
+        let staker = PhoneStaker::new(SingleKey(k), "dev-1", coins, templates);
         (staker, vec!["DTaddZU8Xy1234567890abcdefghij".into()], "dev-1".into())
     }
 }
@@ -87,6 +87,49 @@ pub struct OwnedCoin {
     /// The value THIS device believes the coin holds. Sourced from the device's
     /// own view of the chain, never from a win notice.
     pub value_sats: i64,
+    /// Which HD key controls this coin: the internal (change) chain or the
+    /// external (receiving) chain, and the index within it. The staker derives
+    /// the signing key from these, so a wallet stakes across ALL its addresses,
+    /// not just one. (Single-key setups leave these at 0/false and use a
+    /// [`SingleKey`] provider that ignores them.)
+    pub change: bool,
+    pub key_index: u32,
+}
+
+impl OwnedCoin {
+    /// A coin on the external (receiving) chain at `key_index`.
+    pub fn receiving(txid: impl Into<String>, vout: u32, value_sats: i64, key_index: u32) -> Self {
+        Self { txid: txid.into(), vout, value_sats, change: false, key_index }
+    }
+}
+
+/// Where the staker gets the signing key for a coin it owns. Abstracted so the
+/// same staker works with a full HD wallet (production) or a single key
+/// (tests/import/sweep) without the signing core caring which.
+pub trait CoinKeys {
+    fn key_for(&self, coin: &OwnedCoin) -> Result<StakingKey, String>;
+}
+
+/// A key provider backed by one key — for a single-key wallet, a swept import, or
+/// tests. Ignores the coin's derivation fields.
+pub struct SingleKey(pub StakingKey);
+impl CoinKeys for SingleKey {
+    fn key_for(&self, _coin: &OwnedCoin) -> Result<StakingKey, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// A key provider backed by the HD wallet — derives the exact key that controls
+/// each coin from its `change`/`key_index`. This is the production provider.
+pub struct HdKeys(pub lovenode_hdwallet::HdWallet);
+impl CoinKeys for HdKeys {
+    fn key_for(&self, coin: &OwnedCoin) -> Result<StakingKey, String> {
+        if coin.change {
+            self.0.change_key(coin.key_index)
+        } else {
+            self.0.receiving_key(coin.key_index)
+        }
+    }
 }
 
 /// A source of stake templates — in production, the node via the relay, but
@@ -112,25 +155,24 @@ pub struct StakeTemplate {
 }
 
 /// The on-device staker.
-pub struct PhoneStaker<T: TemplateSource> {
-    key: StakingKey,
+pub struct PhoneStaker<T: TemplateSource, K: CoinKeys = HdKeys> {
+    keys: K,
     device_token: String,
     /// This device's own coins, keyed for lookup by "txid:vout".
     coins: Vec<OwnedCoin>,
     templates: T,
 }
 
-impl<T: TemplateSource> PhoneStaker<T> {
-    pub fn new(key: StakingKey, device_token: impl Into<String>, coins: Vec<OwnedCoin>, templates: T) -> Self {
-        Self { key, device_token: device_token.into(), coins, templates }
+impl<T: TemplateSource, K: CoinKeys> PhoneStaker<T, K> {
+    /// Build a staker from any key provider (`HdKeys` in production).
+    pub fn new(keys: K, device_token: impl Into<String>, coins: Vec<OwnedCoin>, templates: T) -> Self {
+        Self { keys, device_token: device_token.into(), coins, templates }
     }
 
-    /// Our own record of what a coin is worth, or None if it isn't ours.
-    fn known_value(&self, txid: &str, vout: u32) -> Option<i64> {
-        self.coins
-            .iter()
-            .find(|c| c.vout == vout && c.txid.eq_ignore_ascii_case(txid))
-            .map(|c| c.value_sats)
+    /// The coin, if we own it, or None. Used both for its value (ground truth for
+    /// the payback guard) and to derive the key that controls it.
+    fn owned_coin(&self, txid: &str, vout: u32) -> Option<&OwnedCoin> {
+        self.coins.iter().find(|c| c.vout == vout && c.txid.eq_ignore_ascii_case(txid))
     }
 
     /// The full sign flow for one win. This is the heart of the security model.
@@ -138,10 +180,14 @@ impl<T: TemplateSource> PhoneStaker<T> {
         // 1. Re-verify the relay's win claim ourselves.
         notice.verify_win()?;
 
-        // 2. It must be OUR coin, and we must know its value independently.
-        let known_value = self
-            .known_value(&notice.prevout_txid, notice.prevout_n)
+        // 2. It must be OUR coin, and we must know its value independently. From
+        //    the coin we also derive the exact key that controls it (HD wallets
+        //    stake across many addresses, so the key is per-coin, not global).
+        let coin = self
+            .owned_coin(&notice.prevout_txid, notice.prevout_n)
             .ok_or("win notice names a coin this device does not own")?;
+        let known_value = coin.value_sats;
+        let key = self.keys.key_for(coin)?;
 
         // 3. Get the node-authored template (consensus-required payments).
         let tmpl = self.templates.stake_template(&notice.prevout_txid, notice.prevout_n)?;
@@ -172,8 +218,8 @@ impl<T: TemplateSource> PhoneStaker<T> {
         // 4. Sign the coinstake input, refusing unless at least the value WE know
         //    comes back to us. `known_value` is our ground truth, never the relay's,
         //    and it is now provably the value of the coin actually being spent.
-        let script_code = self.key.p2pkh_script();
-        let signed_coinstake = sign_coinstake(&self.key, &unsigned, &script_code, known_value)?;
+        let script_code = key.p2pkh_script();
+        let signed_coinstake = sign_coinstake(&key, &unsigned, &script_code, known_value)?;
 
         // 5. Build the block header ourselves and sign its hash. The deterministic
         //    PoS coinbase is rebuilt from the height, and the merkle root is
@@ -197,7 +243,7 @@ impl<T: TemplateSource> PhoneStaker<T> {
             nonce: 0,
             accumulator_checkpoint: [0u8; 32],
         };
-        let block_signature = sign_block(&self.key, &header)?;
+        let block_signature = sign_block(&key, &header)?;
 
         Ok(SignedStake {
             height: notice.height,
@@ -211,7 +257,7 @@ impl<T: TemplateSource> PhoneStaker<T> {
     }
 }
 
-impl<T: TemplateSource + Send + Sync> StakeSigner for PhoneStaker<T> {
+impl<T: TemplateSource + Send + Sync, K: CoinKeys + Send + Sync> StakeSigner for PhoneStaker<T, K> {
     fn sign_win(&self, notice: &WinNotice) -> Result<SignedStake, String> {
         self.build_signed_stake(notice)
     }
@@ -296,7 +342,7 @@ mod tests {
         }
     }
 
-    fn honest_setup() -> (PhoneStaker<FakeTemplates>, WinNotice) {
+    fn honest_setup() -> (PhoneStaker<FakeTemplates, SingleKey>, WinNotice) {
         let k = key();
         let txid = "cc".repeat(32);
         let real_value = 10_000 * COIN;
@@ -312,8 +358,8 @@ mod tests {
             prev: "aa".repeat(32),
             bits: 0x2100_ffff,
         };
-        let coins = vec![OwnedCoin { txid: txid.clone(), vout: 0, value_sats: real_value }];
-        let staker = PhoneStaker::new(k, "dev-1", coins, templates);
+        let coins = vec![OwnedCoin { txid: txid.clone(), vout: 0, value_sats: real_value, change: false, key_index: 0 }];
+        let staker = PhoneStaker::new(SingleKey(k), "dev-1", coins, templates);
         (staker, notice(0x2100_ffff, &txid))
     }
 
@@ -325,6 +371,35 @@ mod tests {
         assert!(!signed.coinstake_hex.is_empty());
         assert_eq!(signed.block_signature.len(), 130); // 65 bytes hex
         assert_eq!(signed.merkle_root.len(), 64);
+    }
+
+    #[test]
+    fn hd_wallet_signs_for_a_coin_on_a_nonzero_index() {
+        // The point of the HD refactor: a wallet stakes across ALL its addresses.
+        // Put the coin on receiving index 3, and let the staker derive that exact
+        // key from the HD wallet (not a global single key) to sign.
+        use lovenode_hdwallet::HdWallet;
+        use lovenode_sign::wallet::Network;
+        let (wallet, _phrase) = HdWallet::generate(Network::Test).unwrap();
+        let idx = 3u32;
+        let k = wallet.receiving_key(idx).unwrap(); // the key that controls the coin
+        let txid = "cc".repeat(32);
+        let real_value = 10_000 * COIN;
+        let coinstake = build_coinstake(
+            OutPoint { hash: hash_from_display_hex(&txid).unwrap(), n: 0 },
+            vec![TxOut { value: real_value + 498 * COIN, script_pubkey: k.p2pkh_script() }],
+        )
+        .unwrap();
+        let templates =
+            FakeTemplates { coinstake, height: 1_001, prev: "aa".repeat(32), bits: 0x2100_ffff };
+        let coins = vec![OwnedCoin::receiving(txid.clone(), 0, real_value, idx)];
+        // HdKeys must derive the SAME index-3 key to sign successfully.
+        let staker = PhoneStaker::new(HdKeys(wallet), "dev-1", coins, templates);
+        let signed = staker
+            .build_signed_stake(&notice(0x2100_ffff, &txid))
+            .expect("HD staker signs a coin on a non-zero index");
+        assert_eq!(signed.height, 1_001);
+        assert_eq!(signed.block_signature.len(), 130);
     }
 
     #[test]
@@ -361,8 +436,8 @@ mod tests {
         )
         .unwrap();
         let templates = FakeTemplates { coinstake: theft, height: 1_001, prev: "aa".repeat(32), bits: 0x2100_ffff };
-        let coins = vec![OwnedCoin { txid: txid.clone(), vout: 0, value_sats: real_value }];
-        let staker = PhoneStaker::new(k, "dev-1", coins, templates);
+        let coins = vec![OwnedCoin { txid: txid.clone(), vout: 0, value_sats: real_value, change: false, key_index: 0 }];
+        let staker = PhoneStaker::new(SingleKey(k), "dev-1", coins, templates);
 
         let err = staker.build_signed_stake(&notice(0x2100_ffff, &txid)).unwrap_err();
         assert!(err.contains("burned as fee"), "got: {err}");
@@ -388,10 +463,10 @@ mod tests {
         let templates = FakeTemplates { coinstake, height: 1_001, prev: "aa".repeat(32), bits: 0x2100_ffff };
         // the phone knows BOTH coins; the small one is worth 1 sat
         let coins = vec![
-            OwnedCoin { txid: small_txid.clone(), vout: 0, value_sats: 1 },
-            OwnedCoin { txid: big_txid.clone(), vout: 0, value_sats: big_value },
+            OwnedCoin { txid: small_txid.clone(), vout: 0, value_sats: 1, change: false, key_index: 0 },
+            OwnedCoin { txid: big_txid.clone(), vout: 0, value_sats: big_value, change: false, key_index: 0 },
         ];
-        let staker = PhoneStaker::new(k, "dev-1", coins, templates);
+        let staker = PhoneStaker::new(SingleKey(k), "dev-1", coins, templates);
 
         // the win names the SMALL coin
         let err = staker.build_signed_stake(&notice(0x2100_ffff, &small_txid)).unwrap_err();
@@ -409,8 +484,8 @@ mod tests {
             vec![TxOut { value: 10_498 * COIN, script_pubkey: k.p2pkh_script() }],
         ).unwrap();
         let templates = FakeTemplates { coinstake, height: 999, prev: "aa".repeat(32), bits: 0x2100_ffff };
-        let coins = vec![OwnedCoin { txid: txid.clone(), vout: 0, value_sats: 10_000 * COIN }];
-        let staker = PhoneStaker::new(k, "dev-1", coins, templates);
+        let coins = vec![OwnedCoin { txid: txid.clone(), vout: 0, value_sats: 10_000 * COIN, change: false, key_index: 0 }];
+        let staker = PhoneStaker::new(SingleKey(k), "dev-1", coins, templates);
         let err = staker.build_signed_stake(&n).unwrap_err();
         assert!(err.contains("height"), "got: {err}");
     }
