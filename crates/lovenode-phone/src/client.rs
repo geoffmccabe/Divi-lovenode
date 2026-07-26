@@ -27,6 +27,8 @@ pub enum ClientEvent {
     Outcome { height: u64, outcome: StakeOutcome },
     /// We declined to sign a win (the security core refused). Not an error on
     /// the network — the device protecting itself.
+    /// The relay reports money arrived on one of our addresses.
+    IncomingPayment { message: String, amount_sats: i64, is_fast: bool },
     Declined { reason: String },
     /// The relay reported a problem with something we sent.
     RelayError { detail: String },
@@ -108,6 +110,13 @@ where
                     }
                     ServerMsg::Outcome { height, outcome } => {
                         on_event(ClientEvent::Outcome { height, outcome });
+                    }
+                    ServerMsg::Payment(n) => {
+                        on_event(ClientEvent::IncomingPayment {
+                            message: n.message(),
+                            amount_sats: n.amount_sats,
+                            is_fast: n.is_fast,
+                        });
                     }
                     ServerMsg::Error { detail } => {
                         on_event(ClientEvent::RelayError { detail });

@@ -8,7 +8,7 @@
 //! Every message is a tagged JSON object, so the protocol can grow fields
 //! without silent misinterpretation.
 
-use crate::protocol::{Registration, SignedStake, StakeOutcome, WinNotice};
+use crate::protocol::{Registration, SignedStake, StakeOutcome, WinNotice, PaymentNotice};
 use serde::{Deserialize, Serialize};
 
 /// Phone → relay.
@@ -33,6 +33,8 @@ pub enum ServerMsg {
     Win(WinNotice),
     /// What happened to a stake you signed.
     Outcome { height: u64, outcome: StakeOutcome },
+    /// Relay -> phone: an incoming payment landed on one of your addresses.
+    Payment(PaymentNotice),
     /// A message was rejected; `detail` says why.
     Error { detail: String },
     Pong,
@@ -118,6 +120,16 @@ mod tests {
 
         let pong = ServerMsg::Pong;
         assert_eq!(ServerMsg::from_json(&pong.to_json()).unwrap(), pong);
+
+        // the payment notification round-trips too
+        let pay = ServerMsg::Payment(PaymentNotice {
+            amount_sats: 100_00000000,
+            usd_cents: Some(500),
+            from: "geoff.divi".into(),
+            is_fast: true,
+            txid: "ab".repeat(32),
+        });
+        assert_eq!(ServerMsg::from_json(&pay.to_json()).unwrap(), pay);
     }
 
     #[test]

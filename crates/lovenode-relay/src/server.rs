@@ -32,7 +32,7 @@
 
 use crate::chain::{eligible_coins_by_address, staking_tip};
 use crate::engine::{Engine, Staker};
-use crate::protocol::{SignedStake, StakeOutcome};
+use crate::protocol::{PaymentNotice, SignedStake, StakeOutcome};
 use crate::registry::{validate_registration, Registry};
 use crate::rpc::NodeRpc;
 use crate::session::RelaySession;
@@ -139,6 +139,58 @@ impl RelayState {
             }
         }
         Ok(dispatched)
+    }
+
+    /// Detect payments in `tx` to any registered device and push a privacy-safe
+    /// [`PaymentNotice`] to each OWNER — never to anyone else. This is the
+    /// relay-side notification hook: a live deployment calls it for each new
+    /// transaction (from a mempool/block feed), having resolved the sender's
+    /// identity (`sender`, an address or human-readable name), the sender's own
+    /// addresses (`sender_addresses`, to suppress self-notifications on change),
+    /// and a DIVI→USD price (`usd_per_divi`, `None` if unavailable).
+    ///
+    /// Returns how many notices were sent. Delivery over the phone's open socket
+    /// is level 1; a backgrounded app needs a content-less push wake + in-app
+    /// fetch so amounts never pass through Google/Apple (see docs).
+    pub async fn notify_incoming(
+        &self,
+        tx: &lovenode_core::tx::Transaction,
+        sender: &str,
+        sender_addresses: &[String],
+        usd_per_divi: Option<f64>,
+        network: lovenode_sign::wallet::Network,
+    ) -> usize {
+        let is_fast = crate::payments::is_fast_send(tx);
+        let txid = crate::engine::display_hex(&tx.txid());
+        let devices: Vec<(String, Vec<String>)> = {
+            let reg = self.registry.lock().await;
+            reg.devices().map(|d| (d.token.clone(), d.addresses.clone())).collect()
+        };
+        let outbound = self.outbound.lock().await;
+        let mut sent = 0;
+        for (token, addresses) in devices {
+            for inc in crate::payments::payments_to(tx, &addresses, network) {
+                // Never notify the sender about their own change output.
+                if sender_addresses.iter().any(|a| a == &inc.address) {
+                    continue;
+                }
+                let usd_cents =
+                    usd_per_divi.map(|p| ((inc.amount_sats as f64 / 1e8) * p * 100.0).round() as i64);
+                let notice = PaymentNotice {
+                    amount_sats: inc.amount_sats,
+                    usd_cents,
+                    from: sender.to_string(),
+                    is_fast,
+                    txid: txid.clone(),
+                };
+                if let Some((_, ch)) = outbound.get(&token) {
+                    if ch.try_send(ServerMsg::Payment(notice)).is_ok() {
+                        sent += 1;
+                    }
+                }
+            }
+        }
+        sent
     }
 
     async fn submit_signed(&self, signed: SignedStake) -> (u64, StakeOutcome) {

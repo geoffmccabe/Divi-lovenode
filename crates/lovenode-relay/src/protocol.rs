@@ -199,3 +199,78 @@ mod tests {
         }
     }
 }
+
+/// Relay → phone: "money just arrived for you." Sent when the relay sees a
+/// payment land on one of a device's registered addresses. Purely informational
+/// — it carries no digest and nothing to sign, so it cannot be abused the way a
+/// win notice could if it were shaped wrong.
+///
+/// Privacy: this goes ONLY to the device that owns the receiving address, over
+/// its own encrypted connection. The `from` field is the sender's address (or its
+/// human-readable name if one is assigned) — already public on-chain, so it
+/// reveals nothing the receiver could not read from the transaction itself. For a
+/// backgrounded app the delivery layer must use a content-less push wake and let
+/// the app fetch this over TLS, so amounts never pass through Google/Apple.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PaymentNotice {
+    /// Amount received, in satoshis.
+    pub amount_sats: i64,
+    /// Value in US cents at the time, if a price was available. `None` = unknown.
+    pub usd_cents: Option<i64>,
+    /// The sender: a human-readable name if assigned, otherwise the address.
+    pub from: String,
+    /// True if this was a Fast Send (carried the DFS1 marker).
+    pub is_fast: bool,
+    /// The transaction id, so the app can track/confirm it.
+    pub txid: String,
+}
+
+impl PaymentNotice {
+    /// The one-line, privacy-safe message to show the receiver.
+    /// e.g. "You were fast sent 100 DIVI worth $5.00 USD from geoff.divi".
+    pub fn message(&self) -> String {
+        let divi = format_divi(self.amount_sats);
+        let verb = if self.is_fast { "fast sent" } else { "sent" };
+        let usd = match self.usd_cents {
+            Some(c) => format!(" worth ${:.2} USD", c as f64 / 100.0),
+            None => String::new(),
+        };
+        format!("You were {verb} {divi} DIVI{usd} from {}", self.from)
+    }
+}
+
+/// Format sats as DIVI, trimming trailing zeros (100_00000000 -> "100").
+fn format_divi(sats: i64) -> String {
+    let s = format!("{:.8}", sats as f64 / 1e8);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
+}
+
+#[cfg(test)]
+mod payment_tests {
+    use super::*;
+
+    #[test]
+    fn fast_send_message_reads_naturally() {
+        let n = PaymentNotice {
+            amount_sats: 100_00000000,
+            usd_cents: Some(500),
+            from: "geoff.divi".into(),
+            is_fast: true,
+            txid: "ab".repeat(32),
+        };
+        assert_eq!(n.message(), "You were fast sent 100 DIVI worth $5.00 USD from geoff.divi");
+    }
+
+    #[test]
+    fn normal_send_without_price_omits_usd() {
+        let n = PaymentNotice {
+            amount_sats: 150_50000000,
+            usd_cents: None,
+            from: "DTaddr123".into(),
+            is_fast: false,
+            txid: "cd".repeat(32),
+        };
+        assert_eq!(n.message(), "You were sent 150.5 DIVI from DTaddr123");
+    }
+}
