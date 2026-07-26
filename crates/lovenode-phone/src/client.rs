@@ -29,6 +29,8 @@ pub enum ClientEvent {
     /// the network — the device protecting itself.
     /// The relay reports money arrived on one of our addresses.
     IncomingPayment { message: String, amount_sats: i64, is_fast: bool },
+    /// Balance + recent activity for the Overview.
+    Summary { balance_sats: i64, received_sats: i64, recent: Vec<(String, i64, bool)> },
     Declined { reason: String },
     /// The relay reported a problem with something we sent.
     RelayError { detail: String },
@@ -59,6 +61,12 @@ where
     ws.send(Message::Text(reg.to_json()))
         .await
         .map_err(|e| format!("register failed: {e}"))?;
+
+    // Ask for the Overview (balance + recent activity) right away, so it is
+    // populated as soon as the app connects. It is also refreshed on new blocks.
+    ws.send(Message::Text(ClientMsg::GetSummary.to_json()))
+        .await
+        .map_err(|e| format!("summary request failed: {e}"))?;
 
     // Keep-alive so idle connections aren't reaped by intermediaries.
     let mut keepalive = tokio::time::interval(Duration::from_secs(30));
@@ -110,6 +118,13 @@ where
                     }
                     ServerMsg::Outcome { height, outcome } => {
                         on_event(ClientEvent::Outcome { height, outcome });
+                    }
+                    ServerMsg::Summary { balance, recent } => {
+                        on_event(ClientEvent::Summary {
+                            balance_sats: balance.balance_sats,
+                            received_sats: balance.received_sats,
+                            recent: recent.into_iter().map(|a| (a.txid, a.net_sats, a.incoming)).collect(),
+                        });
                     }
                     ServerMsg::Payment(n) => {
                         on_event(ClientEvent::IncomingPayment {

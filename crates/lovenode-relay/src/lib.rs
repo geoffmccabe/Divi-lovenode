@@ -9,6 +9,7 @@ pub mod chain;
 pub mod engine;
 pub mod protocol;
 pub mod payments;
+pub mod wallet_view;
 pub mod rpc;
 pub mod registry;
 pub mod server;

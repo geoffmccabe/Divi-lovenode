@@ -193,6 +193,30 @@ impl RelayState {
         sent
     }
 
+    /// Build the wallet Overview for a device: balance + recent activity, read
+    /// from the node's address index over the device's own addresses (no keys).
+    pub async fn summary(&self, token: &str) -> ServerMsg {
+        let addresses = {
+            let reg = self.registry.lock().await;
+            reg.get(token).map(|d| d.addresses.clone()).unwrap_or_default()
+        };
+        if addresses.is_empty() {
+            return ServerMsg::Error { detail: "register before requesting a summary".into() };
+        }
+        let rpc = self.rpc.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let balance = crate::wallet_view::address_balance(&rpc, &addresses)?;
+            let recent = crate::wallet_view::recent_activity(&rpc, &addresses, 20)?;
+            Ok::<_, String>((balance, recent))
+        })
+        .await;
+        match result {
+            Ok(Ok((balance, recent))) => ServerMsg::Summary { balance, recent },
+            Ok(Err(e)) => ServerMsg::Error { detail: e },
+            Err(_) => ServerMsg::Error { detail: "summary task panicked".into() },
+        }
+    }
+
     async fn submit_signed(&self, signed: SignedStake) -> (u64, StakeOutcome) {
         let height = signed.height;
         let rpc = self.rpc.clone();
@@ -308,6 +332,11 @@ pub async fn handle_one(stream: TcpStream, state: RelayState) -> Result<(), Stri
                         let (height, outcome) = state.submit_signed(signed).await;
                         let _ = sink.send(Message::Text(
                             ServerMsg::Outcome{height, outcome}.to_json())).await;
+                    }
+                    Ok(ClientMsg::GetSummary) => {
+                        let token = device_token.clone().unwrap_or_default();
+                        let msg = state.summary(&token).await;
+                        let _ = sink.send(Message::Text(msg.to_json())).await;
                     }
                     Ok(ClientMsg::Ping) => {
                         let _ = sink.send(Message::Text(ServerMsg::Pong.to_json())).await;

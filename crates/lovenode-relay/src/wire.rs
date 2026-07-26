@@ -9,6 +9,7 @@
 //! without silent misinterpretation.
 
 use crate::protocol::{Registration, SignedStake, StakeOutcome, WinNotice, PaymentNotice};
+use crate::wallet_view::{Activity, Balance};
 use serde::{Deserialize, Serialize};
 
 /// Phone → relay.
@@ -19,6 +20,8 @@ pub enum ClientMsg {
     Register(Registration),
     /// The signed pieces for a win the relay sent.
     Signed(SignedStake),
+    /// Phone → relay: "send me my balance and recent activity."
+    GetSummary,
     /// Keep-alive; the relay answers with [`ServerMsg::Pong`].
     Ping,
 }
@@ -35,6 +38,8 @@ pub enum ServerMsg {
     Outcome { height: u64, outcome: StakeOutcome },
     /// Relay -> phone: an incoming payment landed on one of your addresses.
     Payment(PaymentNotice),
+    /// Relay -> phone: wallet balance + recent activity for the Overview.
+    Summary { balance: Balance, recent: Vec<Activity> },
     /// A message was rejected; `detail` says why.
     Error { detail: String },
     Pong,
@@ -130,6 +135,13 @@ mod tests {
             txid: "ab".repeat(32),
         });
         assert_eq!(ServerMsg::from_json(&pay.to_json()).unwrap(), pay);
+
+        let summary = ServerMsg::Summary {
+            balance: Balance { balance_sats: 100, received_sats: 200 },
+            recent: vec![Activity { txid: "aa".into(), net_sats: 50, height: 3, incoming: true }],
+        };
+        assert_eq!(ServerMsg::from_json(&summary.to_json()).unwrap(), summary);
+        assert_eq!(ClientMsg::from_json(&ClientMsg::GetSummary.to_json()).unwrap(), ClientMsg::GetSummary);
     }
 
     #[test]
