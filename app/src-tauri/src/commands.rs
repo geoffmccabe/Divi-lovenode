@@ -67,6 +67,42 @@ pub fn addresses(app: State<'_, App>) -> Vec<String> {
     app.keystore.public_addresses().unwrap_or_default()
 }
 
+/// The Overview data: balance + recent activity. Served by the mobile host's
+/// live relay connection (`RelayState::summary`), which owns the socket; this
+/// command surface only exposes it to the UI. The UI degrades gracefully (shows
+/// "—" / "no activity") until the host wires it, so a browser dev build is fine.
+#[tauri::command]
+pub fn get_summary(_app: State<'_, App>) -> Result<serde_json::Value, String> {
+    // Wired in the Android entry point, which holds the relay connection.
+    Err("summary is served by the relay connection (wired in the mobile host)".into())
+}
+
+/// Build, sign, and broadcast a Send or Fast Send. The signing uses the HD keys
+/// held by the mobile host (see lovenode_phone::send::build_signed_send); the
+/// broadcast goes out over the host's relay connection. This command validates
+/// and delegates. `kind` is "normal" or "fast".
+#[tauri::command]
+pub fn send_coins(
+    app: State<'_, App>,
+    address: String,
+    amount_sats: i64,
+    kind: String,
+) -> Result<serde_json::Value, String> {
+    if !app.keystore.has_wallet() {
+        return Err("set up a wallet first".into());
+    }
+    if amount_sats <= 0 {
+        return Err("amount must be greater than zero".into());
+    }
+    if kind != "normal" && kind != "fast" {
+        return Err("unknown send kind".into());
+    }
+    let _ = address;
+    // Wired in the Android entry point: derive keys from the loaded seed, call
+    // lovenode_phone::send::build_signed_send, and broadcast via the relay.
+    Err("send is completed by the mobile host (HD keys + relay broadcast)".into())
+}
+
 /// Point the client at a relay. Accepts the hosted relay or a user's own desktop
 /// (DD69). Rejects anything that isn't a websocket URL so a typo can't silently
 /// send traffic somewhere unexpected.

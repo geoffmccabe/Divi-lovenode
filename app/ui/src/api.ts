@@ -32,3 +32,29 @@ export const addresses = () => invoke<string[]>("addresses");
 export const setRelay = (url: string) => invoke<void>("set_relay", { url });
 export const startStaking = () => invoke<void>("start_staking");
 export const stopStaking = () => invoke<void>("stop_staking");
+
+// ── Wallet view (Overview) ────────────────────────────────────────────────
+export interface ActivityItem {
+  txid: string;
+  net_sats: number;
+  incoming: boolean;
+  height: number;
+}
+export interface WalletSummary {
+  balance_sats: number;
+  received_sats: number;
+  usd_per_divi: number | null;
+  recent: ActivityItem[];
+}
+export const getSummary = () => invoke<WalletSummary>("get_summary");
+
+// ── Send ──────────────────────────────────────────────────────────────────
+// kind: "normal" | "fast" (pin_code and bearer are placeholders, not sent)
+export interface SendResult { txid: string; fee_sats: number; kind: string }
+export const send = (address: string, amountSats: number, kind: "normal" | "fast") =>
+  invoke<SendResult>("send_coins", { address, amountSats, kind });
+
+// NOTE for the Android build: get_summary and send_coins are new Tauri commands
+// that wrap lovenode-relay::wallet_view and lovenode-phone::send. They are wired
+// in the mobile entry point (which owns the relay connection + the HD keys); the
+// stubs live in app/src-tauri/src/commands.rs. See app/HANDOFF-JAMES.md.
