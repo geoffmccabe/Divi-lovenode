@@ -110,6 +110,33 @@ pub fn sign_coinstake(
     Ok(signed)
 }
 
+/// Sign one P2PKH input of a normal payment transaction, returning its
+/// `scriptSig` (`<sig+hashtype> <pubkey>`). Each input of a multi-input send is
+/// signed with the key that controls the coin it spends, so the caller loops and
+/// sets `tx.vin[n].script_sig` from the result.
+///
+/// `script_code` is the scriptPubKey of the output being spent (the P2PKH script
+/// of the input's own key). Uses SIGHASH_ALL, like the coinstake path.
+pub fn sign_p2pkh_input(
+    key: &StakingKey,
+    tx: &Transaction,
+    n_in: usize,
+    script_code: &[u8],
+) -> Result<Vec<u8>, String> {
+    let sighash = sighash::signature_hash(tx, n_in, script_code, SIGHASH_ALL)?;
+    let secp = Secp256k1::signing_only();
+    let msg = Message::from_digest(sighash);
+    let sig = secp.sign_ecdsa(&msg, &key.secret);
+    let mut der = sig.serialize_der().to_vec();
+    der.push(SIGHASH_ALL as u8);
+
+    let pubkey = key.public_key();
+    let mut script_sig = Vec::with_capacity(der.len() + pubkey.len() + 2);
+    script::push_data(&mut script_sig, &der);
+    script::push_data(&mut script_sig, &pubkey);
+    Ok(script_sig)
+}
+
 /// Sign a block header, producing `vchBlockSig`.
 ///
 /// Takes the **header**, not a digest: the hash is computed here from a

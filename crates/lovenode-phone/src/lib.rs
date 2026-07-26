@@ -34,6 +34,7 @@ use lovenode_relay::session::StakeSigner;
 use lovenode_sign::{sign_block, sign_coinstake, StakingKey};
 
 pub mod client;
+pub mod send;
 
 #[cfg(test)]
 pub(crate) mod tests_support {
@@ -108,6 +109,11 @@ impl OwnedCoin {
 /// (tests/import/sweep) without the signing core caring which.
 pub trait CoinKeys {
     fn key_for(&self, coin: &OwnedCoin) -> Result<StakingKey, String>;
+
+    /// The P2PKH script that a send's change output should pay back to — an
+    /// address this wallet controls. HD wallets use the internal (change) chain;
+    /// a single-key wallet returns change to its own key.
+    fn change_script(&self) -> Result<Vec<u8>, String>;
 }
 
 /// A key provider backed by one key — for a single-key wallet, a swept import, or
@@ -116,6 +122,9 @@ pub struct SingleKey(pub StakingKey);
 impl CoinKeys for SingleKey {
     fn key_for(&self, _coin: &OwnedCoin) -> Result<StakingKey, String> {
         Ok(self.0.clone())
+    }
+    fn change_script(&self) -> Result<Vec<u8>, String> {
+        Ok(self.0.p2pkh_script())
     }
 }
 
@@ -129,6 +138,9 @@ impl CoinKeys for HdKeys {
         } else {
             self.0.receiving_key(coin.key_index)
         }
+    }
+    fn change_script(&self) -> Result<Vec<u8>, String> {
+        Ok(self.0.change_key(0)?.p2pkh_script())
     }
 }
 
