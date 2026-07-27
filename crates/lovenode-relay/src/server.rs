@@ -55,6 +55,27 @@ const MIN_COIN_AGE_SECS: u32 = 60 * 60; // chainparams: nMinCoinAgeForStaking
 /// Bounded outbound queue per device: if a phone stops reading, we drop it
 /// rather than let its backlog grow without limit.
 const OUTBOUND_QUEUE: usize = 32;
+/// Per-connection cap on node-hitting requests (GetSummary/Signed) per minute.
+/// Above this the relay refuses rather than forwarding to the node, so one client
+/// cannot flood the shared node or starve the blocking pool.
+const NODE_CALLS_PER_MIN: u32 = 30;
+
+/// A tiny fixed-window rate limiter (per connection, single-threaded).
+struct RateLimiter { limit: u32, count: u32, window_start: std::time::Instant }
+impl RateLimiter {
+    fn new(limit: u32) -> Self { Self { limit, count: 0, window_start: std::time::Instant::now() } }
+    /// Returns true if this call is allowed (and counts it).
+    fn allow(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.window_start).as_secs() >= 60 {
+            self.window_start = now;
+            self.count = 0;
+        }
+        if self.count >= self.limit { return false; }
+        self.count += 1;
+        true
+    }
+}
 
 /// Shared server state. Cloneable handles to the same inner data.
 #[derive(Clone)]
@@ -275,7 +296,14 @@ pub async fn serve(
 /// Handle one accepted connection. Public so a caller that already owns a
 /// bound listener (e.g. a test, or a custom accept loop) can reuse it.
 pub async fn handle_one(stream: TcpStream, state: RelayState) -> Result<(), String> {
-    let ws = tokio_tungstenite::accept_async(stream)
+    // Cap inbound message size: a phone only ever sends small frames (a
+    // registration, a signed stake, a ping), so a 256 KiB ceiling refuses a
+    // hostile client trying to buffer huge messages (tungstenite defaults to
+    // ~64 MiB). Belt-and-suspenders against memory pressure.
+    let mut cfg = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+    cfg.max_message_size = Some(256 * 1024);
+    cfg.max_frame_size = Some(256 * 1024);
+    let ws = tokio_tungstenite::accept_async_with_config(stream, Some(cfg))
         .await
         .map_err(|e| format!("websocket handshake failed: {e}"))?;
     let (mut sink, mut source) = ws.split();
@@ -283,6 +311,9 @@ pub async fn handle_one(stream: TcpStream, state: RelayState) -> Result<(), Stri
     let (tx, mut rx) = mpsc::channel::<ServerMsg>(OUTBOUND_QUEUE);
     let conn_id = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
     let mut device_token: Option<String> = None;
+    // Rate-limit the node-hitting requests (GetSummary/Signed) per connection, so
+    // one client cannot spam the shared node or starve the blocking pool.
+    let mut node_calls = RateLimiter::new(NODE_CALLS_PER_MIN);
 
     loop {
         tokio::select! {
@@ -334,11 +365,23 @@ pub async fn handle_one(stream: TcpStream, state: RelayState) -> Result<(), Stri
                             ServerMsg::Registered{eligible_coins: eligible}.to_json())).await;
                     }
                     Ok(ClientMsg::Signed(signed)) => {
+                        if !node_calls.allow() {
+                            let _ = sink.send(Message::Text(ServerMsg::Error{
+                                detail: "too many requests; slow down".into()
+                            }.to_json())).await;
+                            continue;
+                        }
                         let (height, outcome) = state.submit_signed(signed).await;
                         let _ = sink.send(Message::Text(
                             ServerMsg::Outcome{height, outcome}.to_json())).await;
                     }
                     Ok(ClientMsg::GetSummary) => {
+                        if !node_calls.allow() {
+                            let _ = sink.send(Message::Text(ServerMsg::Error{
+                                detail: "too many requests; slow down".into()
+                            }.to_json())).await;
+                            continue;
+                        }
                         let token = device_token.clone().unwrap_or_default();
                         let msg = state.summary(&token).await;
                         let _ = sink.send(Message::Text(msg.to_json())).await;
@@ -401,7 +444,7 @@ mod tests {
             tokio_tungstenite::connect_async(format!("ws://{addr}")).await.unwrap();
 
         let reg = ClientMsg::Register(Registration {
-            addresses: vec!["DTaddZU8Xy1234567890abcdefghij".into()],
+            addresses: vec!["y9tKQfiPeZro3fYMWSEVHSUJoyjqQJqga5".into()],
             device_token: "dev-1".into(),
         });
         ws.send(Message::Text(reg.to_json())).await.unwrap();
@@ -450,7 +493,7 @@ mod tests {
         // connection that reconnected with the same device token.
         let state = RelayState::new(NodeRpc::new("127.0.0.1", 1, "u", "p"));
         let reg = Registration {
-            addresses: vec!["DTaddZU8Xy1234567890abcdefghij".into()],
+            addresses: vec!["y9tKQfiPeZro3fYMWSEVHSUJoyjqQJqga5".into()],
             device_token: "dev-x".into(),
         };
 

@@ -23,6 +23,10 @@ pub struct StakingStatus {
     pub headline: String,
     /// The most recent events, newest first, for the activity list.
     pub recent: Vec<ActivityLine>,
+    /// True only when the seed is in real, persistent, hardware-backed storage.
+    /// While false the app is a TEST build on testnet — the UI must warn the user
+    /// and no real funds should ever be deposited.
+    pub secure_build: bool,
 }
 
 /// One line in the activity feed. Kept factual: what happened, when.

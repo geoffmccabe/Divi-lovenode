@@ -42,6 +42,14 @@ pub struct StakingKey {
     compressed: bool,
 }
 
+impl Drop for StakingKey {
+    fn drop(&mut self) {
+        // secp256k1 0.29's SecretKey has no Drop; erase the key material
+        // explicitly so a derived signing key does not linger in freed memory.
+        self.secret.non_secure_erase();
+    }
+}
+
 impl std::fmt::Debug for StakingKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never leak key material into logs.

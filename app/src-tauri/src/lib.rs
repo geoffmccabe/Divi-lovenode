@@ -12,13 +12,33 @@ mod commands;
 mod state;
 
 use lovenode_keystore::DevKeyStore;
+use lovenode_sign::wallet::Network;
 use std::sync::Arc;
 use tokio::sync::watch;
+
+/// Whether this build stores the seed in real, persistent, hardware-backed secure
+/// storage. It is **false** until the Android Keystore / iOS Keychain backend
+/// (`app/android-plugin/SecureKeyStore.kt`) is wired in place of `DevKeyStore`.
+///
+/// While false, the seed lives only in process memory (lost when the app closes)
+/// and MAINNET IS FORBIDDEN: the app runs on testnet so a user cannot deposit real
+/// DIVI to a wallet whose keys will vanish. Flip to true only together with a real
+/// persistent keystore, at which point mainnet is enabled.
+pub const KEYSTORE_IS_SECURE: bool = false;
+
+/// The network wallets are created on. Testnet until secure storage exists.
+pub fn wallet_network() -> Network {
+    if KEYSTORE_IS_SECURE {
+        Network::Main
+    } else {
+        Network::Test
+    }
+}
 
 /// Shared app state handed to every command.
 pub struct App {
     /// Where the staking key lives. `DevKeyStore` in dev builds; a platform
-    /// backend (Android Keystore / iOS Keychain) is injected in a real build.
+    /// backend (Android Keystore / iOS Keychain) replaces it in a secure build.
     pub keystore: Arc<DevKeyStore>,
     /// The relay we connect to. Defaults to the hosted relay; the user may point
     /// it at their own desktop (DD69) instead.

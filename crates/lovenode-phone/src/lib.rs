@@ -74,7 +74,7 @@ pub(crate) mod tests_support {
         let templates = HonestTemplates { coinstake, height: 1_001, prev: "aa".repeat(32), bits: 0x2100_ffff };
         let coins = vec![OwnedCoin { txid, vout: 0, value_sats: real_value, change: false, key_index: 0 }];
         let staker = PhoneStaker::new(SingleKey(k), "dev-1", coins, templates);
-        (staker, vec!["DTaddZU8Xy1234567890abcdefghij".into()], "dev-1".into())
+        (staker, vec!["y9tKQfiPeZro3fYMWSEVHSUJoyjqQJqga5".into()], "dev-1".into())
     }
 }
 

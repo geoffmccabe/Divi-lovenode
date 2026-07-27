@@ -25,6 +25,7 @@ export function Setup({ onDone }: { onDone: () => void }) {
     return (
       <div className="content"><div className="card">
         <p className="h">Your recovery phrase</p>
+        <p className="err" style={{ fontWeight: 600 }}>TEST BUILD — testnet only. Do NOT deposit real DIVI; these keys are not yet in secure storage and are for testing the app.</p>
         <p className="sub">Write these 12 words down and keep them safe. They are the ONLY way to restore your wallet. We cannot recover them for you.</p>
         <div className="mono" style={{ margin: "16px 0", lineHeight: 1.8 }}>{phrase}</div>
         <button className="primary-btn" onClick={onDone}>I've written it down</button>

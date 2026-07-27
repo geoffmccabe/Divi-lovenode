@@ -78,7 +78,9 @@ impl ExtKey {
 impl Drop for ExtKey {
     fn drop(&mut self) {
         self.chain_code.zeroize();
-        // SecretKey has its own zeroization on drop in secp256k1.
+        // secp256k1 0.29's SecretKey has NO Drop, so erase it explicitly rather
+        // than leaving a derived child key in freed memory.
+        self.secret.non_secure_erase();
     }
 }
 

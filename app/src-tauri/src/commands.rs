@@ -13,6 +13,9 @@ pub fn status(app: State<'_, App>) -> StakingStatus {
     // Keep the always-derivable fields honest even if nothing has run yet.
     s.has_wallet = app.keystore.has_wallet();
     s.relay_url = app.relay_url.lock().expect("relay lock").clone();
+    // True only in a build with real, persistent, hardware-backed key storage.
+    // While false the UI shows a TEST-BUILD warning and the wallet is on testnet.
+    s.secure_build = crate::KEYSTORE_IS_SECURE;
     if s.headline.is_empty() {
         s.headline = if !s.has_wallet {
             "Set up a staking wallet to begin.".into()
@@ -40,12 +43,14 @@ pub fn has_wallet(app: State<'_, App>) -> bool {
 
 /// Create a brand-new wallet on this device. Returns the 12-word recovery phrase
 /// to show the user ONCE for backup. Refuses if a wallet already exists.
+/// Uses TESTNET until a secure persistent keystore exists (see KEYSTORE_IS_SECURE),
+/// so a user cannot lose real funds to a wallet whose keys are only in memory.
 #[tauri::command]
 pub fn create_wallet(app: State<'_, App>) -> Result<String, String> {
     // Mainnet by default; a dev/test build overrides the network at setup.
     let mnemonic = lovenode_keystore::setup_new_wallet(
         app.keystore.as_ref(),
-        lovenode_sign::wallet::Network::Main,
+        crate::wallet_network(),
     )?;
     Ok(mnemonic.phrase().to_string())
 }
@@ -57,7 +62,7 @@ pub fn restore_wallet(app: State<'_, App>, phrase: String, passphrase: String) -
         app.keystore.as_ref(),
         phrase.trim(),
         passphrase.trim(),
-        lovenode_sign::wallet::Network::Main,
+        crate::wallet_network(),
     )
 }
 

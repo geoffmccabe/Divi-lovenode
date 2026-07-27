@@ -21,6 +21,21 @@ pub struct Device {
 /// make the per-block scan arbitrarily expensive on the shared node.
 pub const MAX_ADDRESSES_PER_DEVICE: usize = 64;
 
+/// Maximum registered devices, so an attacker cannot grow the registry (and thus
+/// the per-block node scan) without bound. A public relay should also cap raw
+/// connections at the proxy; this caps the *registered* set the tick iterates.
+pub const MAX_DEVICES: usize = 20_000;
+
+/// Validate one address is a real Divi base58check address (mainnet version 30 or
+/// testnet/regtest 139, 20-byte key hash). This is what stops a junk string from
+/// poisoning the shared per-block `listunspent` for every user.
+fn is_valid_divi_address(a: &str) -> bool {
+    match crate::payments::address_script(a, lovenode_sign::wallet::Network::Main) {
+        Some(_) => true,
+        None => crate::payments::address_script(a, lovenode_sign::wallet::Network::Test).is_some(),
+    }
+}
+
 /// Validate a registration before accepting it.
 ///
 /// Rejects empty and oversized address sets, and — the point of this function —
@@ -49,10 +64,10 @@ pub fn validate_registration(reg: &Registration) -> Result<(), String> {
                     .into(),
             );
         }
-        // A Divi base58 address is ~34 chars; reject the obviously-wrong.
-        let len = a.trim().len();
-        if !(20..=64).contains(&len) {
-            return Err(format!("'{a}' is not a plausible address"));
+        // Must be a real Divi base58check address — not merely plausible in
+        // length. A junk entry would otherwise poison the shared per-block scan.
+        if !is_valid_divi_address(a.trim()) {
+            return Err(format!("'{a}' is not a valid Divi address"));
         }
     }
     Ok(())
@@ -85,6 +100,12 @@ impl Registry {
     pub fn register(&mut self, reg: Registration) -> Result<&Device, String> {
         validate_registration(&reg)?;
         let token = reg.device_token.clone();
+        // Cap the registered set: a NEW token is refused once at capacity, so the
+        // per-block scan cost can't be grown without bound. Re-registering an
+        // existing token (reconnect / address update) is always allowed.
+        if !self.devices.contains_key(&token) && self.devices.len() >= MAX_DEVICES {
+            return Err("relay is at device capacity; try another relay".into());
+        }
         self.devices.insert(
             token.clone(),
             Device { token: token.clone(), addresses: reg.addresses, coins: Vec::new() },
@@ -142,7 +163,7 @@ mod tests {
         }
     }
 
-    const ADDR: &str = "DTaddZU8Xy1234567890abcdefghij"; // ~30 chars, address-shaped
+    const ADDR: &str = "y9tKQfiPeZro3fYMWSEVHSUJoyjqQJqga5"; // ~30 chars, address-shaped
 
     #[test]
     fn accepts_a_normal_registration() {
@@ -180,7 +201,7 @@ mod tests {
     #[test]
     fn all_addresses_deduplicates_across_devices() {
         let mut r = Registry::new();
-        let a2 = "DSecondAddr234567890abcdefghij";
+        let a2 = "yFjUKo2PLiA6bPqJuK4HFvjPMiS9zLD1MT";
         r.register(reg("dev1", &[ADDR, a2])).unwrap();
         r.register(reg("dev2", &[ADDR])).unwrap(); // shares ADDR
         assert_eq!(r.all_addresses().len(), 2, "the shared address counts once");

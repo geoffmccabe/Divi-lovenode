@@ -15,6 +15,7 @@ export interface StakingStatus {
   blocks_won: number;
   headline: string;
   recent: ActivityLine[];
+  secure_build: boolean;
 }
 
 export interface Disclosures {

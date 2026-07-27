@@ -1,7 +1,8 @@
 // The hybrid navigation shell: a bottom tab bar for the primary screens
 // (Overview / Send / Receive) plus a slide-out menu for everything else. The
 // content area routes on the active screen id.
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getStatus } from "./api";
 import { NAV, PRIMARY, type NavItem } from "./nav";
 import { Overview } from "./screens/Overview";
 import { Send } from "./screens/Send";
@@ -31,6 +32,8 @@ function screenFor(item: NavItem) {
 export function Shell() {
   const [active, setActive] = useState("overview");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [secure, setSecure] = useState(true);
+  useEffect(() => { getStatus().then((s) => setSecure(s.secure_build)).catch(() => {}); }, []);
   const current = NAV.find((n) => n.id === active) ?? NAV[0];
 
   const go = (id: string) => { setActive(id); setMenuOpen(false); };
@@ -43,6 +46,9 @@ export function Shell() {
         <span className="spacer" />
       </div>
 
+      {!secure && (
+        <div className="testbanner">TEST BUILD · testnet · do not use real funds</div>
+      )}
       <div className="content">{screenFor(current)}</div>
 
       <nav className="tabbar">
