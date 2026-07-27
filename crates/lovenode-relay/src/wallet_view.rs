@@ -64,7 +64,9 @@ pub fn parse_activity(v: &Value, limit: usize) -> Result<Vec<Activity>, String> 
     out.sort_by(|a, b| {
         let ha = if a.height == 0 { i64::MAX } else { a.height };
         let hb = if b.height == 0 { i64::MAX } else { b.height };
-        hb.cmp(&ha)
+        // Stable tie-break by txid so same-height truncation is deterministic
+        // (never silently drops an arbitrary one of two equally-new entries).
+        hb.cmp(&ha).then_with(|| a.txid.cmp(&b.txid))
     });
     out.truncate(limit);
     Ok(out)

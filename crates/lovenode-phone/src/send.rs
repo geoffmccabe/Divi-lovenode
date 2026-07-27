@@ -103,16 +103,32 @@ fn est_fee(kind: SendKind, inputs: usize, outputs: usize) -> i64 {
     size as i64 * RELAY_SATS_PER_BYTE * kind.fee_multiple()
 }
 
+/// The AUTHORITATIVE on-chain value of a coin, obtained trustlessly. The phone
+/// has no chain, so a live build gets each coin's value by fetching its funding
+/// transaction from the relay and checking the raw bytes hash to the txid it is
+/// spending (the txid cryptographically commits to the outputs) — the relay
+/// cannot lie about a value without breaking that hash. This is the send-side
+/// analogue of the staking path's independently-known coin value.
+///
+/// SAFETY: `build_signed_send` uses THIS for all money math, never the caller's
+/// `OwnedCoin.value_sats` (which is only a selection hint). Without it, a relay
+/// that under-reports a coin's value could make the phone burn the difference as
+/// fee — so the trait is required, not optional.
+pub trait FundingValues {
+    fn true_value(&self, txid: &str, vout: u32) -> Result<i64, String>;
+}
+
 /// Build and sign a payment. `coins` are this wallet's spendable UTXOs (each with
 /// the derivation that lets `keys` sign it); `amount_sats` is what the recipient
-/// receives.
-pub fn build_signed_send<K: CoinKeys>(
+/// receives. `funding` supplies each coin's verified on-chain value.
+pub fn build_signed_send<K: CoinKeys, F: FundingValues>(
     keys: &K,
     coins: &[OwnedCoin],
     dest_address: &str,
     amount_sats: i64,
     kind: SendKind,
     network: Network,
+    funding: &F,
 ) -> Result<BuiltSend, String> {
     if amount_sats <= 0 {
         return Err("amount must be greater than zero".into());
@@ -124,7 +140,8 @@ pub fn build_signed_send<K: CoinKeys>(
     let n_out = if kind.is_fast() { 3 } else { 2 };
 
     // --- coin selection: prefer the smallest single coin that covers it; else
-    // accumulate largest-first (mirrors DD69). ---
+    // accumulate largest-first (mirrors DD69). The believed `value_sats` is only
+    // a SELECTION HINT here; the money math below uses verified values. ---
     let mut sorted: Vec<&OwnedCoin> = coins.iter().filter(|c| c.value_sats > 0).collect();
     sorted.sort_by_key(|c| c.value_sats);
     let need_single = amount_sats + est_fee(kind, 1, n_out);
@@ -141,7 +158,12 @@ pub fn build_signed_send<K: CoinKeys>(
         }
         acc
     };
-    let total_in: i64 = selected.iter().map(|c| c.value_sats).sum();
+    // AUTHORITATIVE total: the VERIFIED value of each selected coin, never the
+    // caller-supplied hint. This is what stops a lied-about value burning funds.
+    let mut total_in: i64 = 0;
+    for c in &selected {
+        total_in += funding.true_value(&c.txid, c.vout)?;
+    }
     let fee = est_fee(kind, selected.len(), n_out);
     if total_in < amount_sats + fee {
         return Err("not enough spendable balance for this send (amount plus fee)".into());
@@ -213,6 +235,20 @@ mod tests {
 
     const COIN: i64 = 100_000_000;
 
+    // A funding verifier for tests: maps each coin to its TRUE on-chain value.
+    struct FakeFunding(std::collections::HashMap<(String, u32), i64>);
+    impl FakeFunding {
+        // by default, true value == the coin's believed value (honest case)
+        fn honest(coins: &[OwnedCoin]) -> Self {
+            FakeFunding(coins.iter().map(|c| ((c.txid.clone(), c.vout), c.value_sats)).collect())
+        }
+    }
+    impl FundingValues for FakeFunding {
+        fn true_value(&self, txid: &str, vout: u32) -> Result<i64, String> {
+            self.0.get(&(txid.to_string(), vout)).copied().ok_or_else(|| "unknown coin".into())
+        }
+    }
+
     // a wallet plus some coins on its first receiving addresses
     fn wallet_with_coins(values: &[i64]) -> (crate::HdKeys, Vec<OwnedCoin>, String) {
         let (w, _) = HdWallet::generate(Network::Main).unwrap();
@@ -229,7 +265,7 @@ mod tests {
     fn normal_send_builds_a_valid_signed_tx_with_change() {
         let (keys, coins, dest) = wallet_with_coins(&[1000 * COIN]);
         let built =
-            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main).unwrap();
+            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main, &FakeFunding::honest(&coins)).unwrap();
         // parses back, has the expected shape
         let tx = Transaction::deserialize(
             &lovenode_core::serialize::from_hex(&built.raw_hex).unwrap(),
@@ -247,9 +283,9 @@ mod tests {
     fn fast_send_carries_the_dfs1_marker_and_a_higher_fee() {
         let (keys, coins, dest) = wallet_with_coins(&[1000 * COIN]);
         let normal =
-            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main).unwrap();
+            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main, &FakeFunding::honest(&coins)).unwrap();
         let fast =
-            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Fast, Network::Main).unwrap();
+            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Fast, Network::Main, &FakeFunding::honest(&coins)).unwrap();
         assert!(fast.fee_sats > normal.fee_sats, "fast send pays more");
 
         let tx = Transaction::deserialize(
@@ -269,7 +305,7 @@ mod tests {
     fn selects_multiple_coins_when_no_single_one_covers_it() {
         let (keys, coins, dest) = wallet_with_coins(&[40 * COIN, 40 * COIN, 40 * COIN]);
         let built =
-            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main).unwrap();
+            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main, &FakeFunding::honest(&coins)).unwrap();
         let tx = Transaction::deserialize(
             &lovenode_core::serialize::from_hex(&built.raw_hex).unwrap(),
         )
@@ -281,7 +317,7 @@ mod tests {
     fn refuses_when_balance_is_insufficient() {
         let (keys, coins, dest) = wallet_with_coins(&[10 * COIN]);
         assert!(
-            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main).is_err()
+            build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main, &FakeFunding::honest(&coins)).is_err()
         );
     }
 
@@ -291,7 +327,7 @@ mod tests {
         // a testnet address on a mainnet send must be refused
         let (tw, _) = HdWallet::generate(Network::Test).unwrap();
         let testnet_addr = tw.receiving_address(1).unwrap();
-        let err = build_signed_send(&keys, &coins, &testnet_addr, 100 * COIN, SendKind::Normal, Network::Main)
+        let err = build_signed_send(&keys, &coins, &testnet_addr, 100 * COIN, SendKind::Normal, Network::Main, &FakeFunding::honest(&coins))
             .unwrap_err();
         assert!(err.contains("mainnet"), "got: {err}");
     }
@@ -303,12 +339,34 @@ mod tests {
         let fee_guess = est_fee(SendKind::Normal, 1, 2);
         let amount = 100 * COIN - fee_guess - (DUST_SATS / 2); // change would be < dust
         let built =
-            build_signed_send(&keys, &coins, &dest, amount, SendKind::Normal, Network::Main).unwrap();
+            build_signed_send(&keys, &coins, &dest, amount, SendKind::Normal, Network::Main, &FakeFunding::honest(&coins)).unwrap();
         let tx = Transaction::deserialize(
             &lovenode_core::serialize::from_hex(&built.raw_hex).unwrap(),
         )
         .unwrap();
         // only the recipient output; the tiny change went into the fee
         assert_eq!(tx.vout.len(), 1, "dust change must not create an output");
+    }
+
+    #[test]
+    fn under_reported_value_cannot_burn_funds() {
+        // A hostile relay tells the phone a 1000-DIVI coin is worth 200. If the
+        // builder trusted that, sending 100 would burn ~800 as fee. The verified
+        // true value (1000) is used instead, so change is correct and the fee cap
+        // holds -- no burn.
+        let (keys, mut coins, dest) = wallet_with_coins(&[200 * COIN]); // BELIEVED 200
+        // the on-chain truth is 1000 DIVI
+        let mut truth = std::collections::HashMap::new();
+        truth.insert((coins[0].txid.clone(), coins[0].vout), 1000 * COIN);
+        let funding = FakeFunding(truth);
+        coins[0].value_sats = 200 * COIN; // the lie the relay fed us
+
+        let built = build_signed_send(&keys, &coins, &dest, 100 * COIN, SendKind::Normal, Network::Main, &funding).unwrap();
+        // fee is tiny (well under the cap), NOT ~800 DIVI
+        assert!(built.fee_sats < COIN, "verified value must prevent a burned fee, got {}", built.fee_sats);
+        // change went back to us: total_out ~= 1000, so change ~= 900
+        let tx = Transaction::deserialize(&lovenode_core::serialize::from_hex(&built.raw_hex).unwrap()).unwrap();
+        let total_out: i64 = tx.vout.iter().map(|o| o.value).sum();
+        assert!(total_out > 990 * COIN, "change must be returned, total_out={}", total_out);
     }
 }

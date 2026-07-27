@@ -136,8 +136,11 @@ impl KeyStore for DevKeyStore {
     }
 
     fn store_seed(&self, seed: &[u8; 64]) -> Result<(), String> {
-        *self.inner.lock().expect("keystore lock") =
-            Some(Stored { seed: *seed, addresses: Vec::new() });
+        let mut guard = self.inner.lock().expect("keystore lock");
+        if let Some(mut old) = guard.take() {
+            old.seed.zeroize(); // wipe any prior seed before overwriting
+        }
+        *guard = Some(Stored { seed: *seed, addresses: Vec::new() });
         Ok(())
     }
 

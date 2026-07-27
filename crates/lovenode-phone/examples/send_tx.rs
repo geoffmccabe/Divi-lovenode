@@ -1,11 +1,24 @@
 //! Prove a locally-built Send and Fast Send are accepted by a real node.
 //! DIVI_DATADIR=~/divi-poe-regtest cargo run -p lovenode-phone --example send_tx
 use lovenode_hdwallet::HdWallet;
-use lovenode_phone::send::{build_signed_send, SendKind};
+use lovenode_phone::send::{build_signed_send, FundingValues, SendKind};
 use lovenode_phone::{HdKeys, OwnedCoin};
 use lovenode_relay::rpc::NodeRpc;
 use lovenode_sign::wallet::Network;
 use serde_json::json;
+
+// Verifier backed by the node: reads the funding tx's output value. On a real
+// phone this fetch is from the relay and the raw bytes are checked to hash to the
+// txid; here the trusted regtest node stands in for that verified fetch.
+struct NodeFunding { conf: String }
+impl FundingValues for NodeFunding {
+    fn true_value(&self, txid: &str, vout: u32) -> Result<i64, String> {
+        let rpc = NodeRpc::from_conf(&self.conf, "127.0.0.1")?;
+        let t = rpc.call("getrawtransaction", json!([txid, 1]))?;
+        let o = &t["vout"][vout as usize];
+        Ok((o["value"].as_f64().ok_or("no value")? * 1e8).round() as i64)
+    }
+}
 
 fn main() {
     let dir = std::env::var("DIVI_DATADIR").unwrap();
@@ -52,7 +65,7 @@ fn main() {
     coins_for_kind.push(OwnedCoin::receiving(f2.clone(), v2["n"].as_u64().unwrap() as u32, (v2["value"].as_f64().unwrap()*1e8).round() as i64, 2));
 
     for (i, kind) in [SendKind::Normal, SendKind::Fast].into_iter().enumerate() {
-        let built = build_signed_send(&keys, std::slice::from_ref(&coins_for_kind[i]), &dest, 100 * 100_000_000, kind, Network::Test).unwrap();
+        let built = build_signed_send(&keys, std::slice::from_ref(&coins_for_kind[i]), &dest, 100 * 100_000_000, kind, Network::Test, &NodeFunding { conf: conf.clone() }).unwrap();
         match rpc.call("sendrawtransaction", json!([built.raw_hex])) {
             Ok(txid) => {
                 println!(">>> {:?} ACCEPTED by node: txid {} (fee {} sats)", kind, txid.as_str().unwrap_or(""), built.fee_sats);

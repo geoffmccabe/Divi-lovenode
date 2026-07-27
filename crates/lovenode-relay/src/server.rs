@@ -20,10 +20,15 @@
 //!   reverse proxy (nginx/Caddy) in front, so addresses and traffic are not in
 //!   the clear on the wire. Without it a network observer learns which addresses
 //!   a user stakes (a privacy cost, never a theft one).
-//! * **No proof of address ownership at registration.** A client may register an
-//!   address it does not own; it then learns when that address's coins are
-//!   eligible or winning (it cannot sign them). Close with a challenge: the relay
-//!   sends a nonce, the phone signs it with the address key. Privacy, not funds.
+//! * **No proof of address ownership at registration (TOP pre-deploy item).** A
+//!   client may register an address it does not own. It cannot sign those coins,
+//!   but it now learns everything that happens to the address: not just when a
+//!   coin is eligible/winning, but — since payment notices were added — the
+//!   AMOUNT, USD value, sender, and txid of every deposit (see `notify_incoming`).
+//!   An attacker who knows a victim's public address can watch their incoming
+//!   payments. Close before any public deployment with a challenge: the relay
+//!   sends a nonce, the phone signs it with the address key to prove ownership.
+//!   Still a privacy exposure, never a theft one.
 //! * **No connection auth or per-IP limit.** An attacker can open many
 //!   unregistered sockets. Needs a connection cap / rate limit for a public relay.
 //!

@@ -59,6 +59,9 @@ impl ExtKey {
             .map_err(|_| "derived key invalid (try next index)".to_string())?;
         let mut chain_code = [0u8; 32];
         chain_code.copy_from_slice(&i[32..]);
+        // wipe the transient HMAC output (held the child secret + chain code)
+        let mut i = i;
+        i.zeroize();
         Ok(ExtKey { secret: child_secret, chain_code })
     }
 

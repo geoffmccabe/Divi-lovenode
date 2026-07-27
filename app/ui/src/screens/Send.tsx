@@ -24,9 +24,12 @@ export function Send() {
     setErr(""); setDone(null);
     const amt = Number(amount);
     if (!address.trim() || !(amt > 0)) { setErr("Enter an address and an amount."); return; }
+    const sats = Math.round(amt * 1e8);
+    if (sats < 1) { setErr("Amount is too small (below 1 satoshi)."); return; }
+    if (sats > Number.MAX_SAFE_INTEGER) { setErr("Amount is too large."); return; }
     setBusy(true);
     try {
-      const res = await send(address.trim(), Math.round(amt * 1e8), kind === "fast" ? "fast" : "normal");
+      const res = await send(address.trim(), sats, kind === "fast" ? "fast" : "normal");
       setDone(res);
       setAddress(""); setAmount("");
     } catch (e) {
