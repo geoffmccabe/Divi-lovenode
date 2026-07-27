@@ -1,10 +1,16 @@
 [package]
 name = "lovenode-app"
 description = "LoveNode — stake DIVI from your phone. The Tauri shell around the tested Rust staking core."
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/geoffmccabe/Divi-lovenode"
+
+# This crate is built by `cargo tauri android/ios`, not the main cargo workspace,
+# so it is its own workspace root (the empty table below stops it trying to join
+# the pure-Rust workspace at the repo root). Its path deps still resolve against
+# that workspace, where those crates live.
+[workspace]
 
 # Tauri mobile builds the Rust as a library linked into the Android/iOS host.
 [lib]

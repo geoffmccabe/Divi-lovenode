@@ -8,3 +8,7 @@ Cargo.lock
 # LoveNode app UI build artifacts
 app/ui/node_modules/
 app/ui/dist/
+app/src-tauri/gen/
+app/src-tauri/target/
+app/src-tauri/Cargo.lock
+app/src-tauri/app-icon.png
