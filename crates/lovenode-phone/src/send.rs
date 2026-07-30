@@ -144,7 +144,7 @@ pub fn build_signed_send<K: CoinKeys, F: FundingValues>(
     // a SELECTION HINT here; the money math below uses verified values. ---
     let mut sorted: Vec<&OwnedCoin> = coins.iter().filter(|c| c.value_sats > 0).collect();
     sorted.sort_by_key(|c| c.value_sats);
-    let need_single = amount_sats + est_fee(kind, 1, n_out);
+    let need_single = amount_sats.saturating_add(est_fee(kind, 1, n_out));
     let selected: Vec<&OwnedCoin> = if let Some(one) = sorted.iter().find(|c| c.value_sats >= need_single) {
         vec![*one]
     } else {
@@ -152,7 +152,7 @@ pub fn build_signed_send<K: CoinKeys, F: FundingValues>(
         for c in sorted.iter().rev() {
             acc.push(*c);
             let sum: i64 = acc.iter().map(|c| c.value_sats).sum();
-            if sum >= amount_sats + est_fee(kind, acc.len(), n_out) {
+            if sum >= amount_sats.saturating_add(est_fee(kind, acc.len(), n_out)) {
                 break;
             }
         }
@@ -162,10 +162,10 @@ pub fn build_signed_send<K: CoinKeys, F: FundingValues>(
     // caller-supplied hint. This is what stops a lied-about value burning funds.
     let mut total_in: i64 = 0;
     for c in &selected {
-        total_in += funding.true_value(&c.txid, c.vout)?;
+        total_in = total_in.saturating_add(funding.true_value(&c.txid, c.vout)?);
     }
     let fee = est_fee(kind, selected.len(), n_out);
-    if total_in < amount_sats + fee {
+    if total_in < amount_sats.saturating_add(fee) {
         return Err("not enough spendable balance for this send (amount plus fee)".into());
     }
     if fee > FEE_CAP_SATS {

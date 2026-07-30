@@ -52,6 +52,19 @@ where
     K: crate::CoinKeys,
     F: FnMut(ClientEvent),
 {
+    // Refuse a remote plaintext ws:// URL: over it a network attacker reads the
+    // user's addresses/balances and can pose as a hostile relay. Plain ws:// is
+    // only allowed to a device on the user's own network (their own desktop).
+    if relay_url.starts_with("ws://")
+        && !(relay_url.contains("127.0.0.1")
+            || relay_url.contains("localhost")
+            || relay_url.contains("192.168.")
+            || relay_url.contains("10.")
+            || relay_url.contains(".local"))
+    {
+        return Err("a remote relay must use wss:// (encrypted)".into());
+    }
+
     let (mut ws, _) = tokio_tungstenite::connect_async(relay_url)
         .await
         .map_err(|e| format!("cannot reach the relay: {e}"))?;
